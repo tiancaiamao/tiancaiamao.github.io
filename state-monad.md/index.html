@@ -1,0 +1,184 @@
+<html lang="zh_CN"><head><meta charset="utf-8" /><title>state monad 推导</title><link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css" /></head><body><div class="navbar navbar-inverse"><div class="container"><div class="collapse navbar-collapse"><ul class="nav navbar-nav"><li><a href="/">Home</a></li><li><a href="/index">Blog</a></li><li><a href="/project">Project</a></li><li><a href="/about">About</a></li><li><a href="/feed.atom">Rss</a></li></ul></div></div></div><div class="container"><div class="row row-offcanvas row-offcanvas-right"><div class="col-sm-9"><div id="content"><h1 id="Title">state monad 推导</h1><p>2025-06-12</p><p>函数式语言里面不带副作用，实现状态修改需要一些技巧性的写法，也就是 state monad。</p><p>下用面一个例子来推导 state monad。先来一个假设的需求，我们要将一个 sexp 里面出现的所有数字 +1，同时，还需统计这个 sexp 里面出现的符号 a 的次数。</p><p>在 cora 语言里面是没有局部变量修改操作，它是一门函数式的语言，虽然不像 haskell 那么纯函数式。
+它的符号是可以重绑定的，以及 vector 是可以修改的。所以有绕过去的写法，通过符号的重赋值：</p><pre><code>(set '*var* (gensym))
+
+(func parse
+      'a =&gt; (begin
+         (set *var* (+ (value *var*) 1))
+         'a)
+      x =&gt; (+ x 1) where (number? x)
+      [x . xs] =&gt; [(parse x) . (parse xs)]
+      x =&gt; x)
+
+(set *var* 0)
+(parse `(a 3 (4 2 5 (a) b (d (c)) 7 2)))
+(value *var*)
+</code></pre><p>这里的 <em>var</em> 是一个符号，通过 (value <em>var</em>) 和 (set <em>var</em> xxx) 来实现类似全局变量的效果，通过它统计 a 的次数。
+这种写法的代码很糟糕，它是带副作用的。</p><p>怎么样写不带副作用的代码呢？我们需要给 parse 加一个参数，它既是一个传入参数，也是一个返回值参数：</p><pre><code>(func parse
+      'a s =&gt; [(+ s 1) 'a]
+      x s =&gt; [s (+ x 1)] where (number? x)
+      [x . xs] s =&gt; (match (parse x s)
+               [s1 x1]
+               (match (parse xs s1)
+                  [s2 xs1]
+                  [s2 [x1 . xs1]]))
+      x s =&gt; [s x])
+</code></pre><p>使用的时候每次都需要传入参数 s，这样就没有副作用了</p><pre><code>(let s 0
+     (parse `(a 3 (4 2 5 (a) b (d (c)) 7 2)) s))
+</code></pre><p>s 其实是一个状态，调用 parse 函数其实是需要修改这个状态。parse 是一个&quot;有副作用&quot; 的方法，它需要返回 parse 后的结果，并且同时需要修改状态 s。实现方式是传入旧的状态，返回新的状态这种形式的 &quot;修改&quot;，所以它又是无副作用的。</p><p>对于每个有状态的函数，我们都要额外传状态参数，这其实会让人很恼火。怎么样把这个状态参数消除掉呢？</p><p>我们可以先进行 curry 变换，把 s 从参数挪出去：</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (lambda (s) [s (+ x 1)]) where (number? x)
+      [x . xs] =&gt; (lambda (s)
+            (match (parse x s)
+               [s1 x1]
+               (match (parse xs s1)
+                  [s2 xs1]
+                  [s2 [x1 . xs1]])))
+      x =&gt; (lambda (s) [s x]))
+
+((parse  '(a 3 (4 2 5 (a) b (d (c)) 7 2))) 0)
+</code></pre><p>接下来，我们重点为看 (parse x s) 的返回处理，</p><pre><code>(match (parse x s)
+       [s1 x1]
+       ...body)
+</code></pre><p>这是一个多值返回，在<a href="multiple-returns-in-scheme.md">多值返回那篇博客</a>中，我们记得<em>返回多个值 s1 x1 等价于接受一个 k 然后调用 (k s1 x1)</em>。</p><pre><code>(match (parse x s)
+    [s1 x1]
+    (k s1 x1))
+
+k = (lambda (x1)
+      (lambda (s1)
+    ... ;; 接受多值后的处理，body))
+</code></pre><p>于是前面的 parse 函数我们就可以改写成：</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (lambda (s) [s (+ x 1)]) where (number? x)
+      [x . xs] =&gt; (lambda (s)
+            (match (parse x s)
+               [s1 x1]
+               (k x1 s1)))
+      x =&gt; (lambda (s) [s x]))
+
+
+k = (lambda (x1)
+      (lambda (s1)
+    (match (parse xs s1)
+           [s2 xs1]
+           [s2 [x1 . xs1]])))
+</code></pre><p>我们当然可以很自由地修改 (parse x s) 这种变成 ((parse x) s)，(k x1 s1) 也可以 ((k x1) s1)，或者如果我们不喜欢 k 这个名字，我们也可以改名叫 f，都是 curry 变换和 alpha 变换。于是 parse 可以变成这样子:</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (lambda (s) [s (+ x 1)]) where (number? x)
+      [x . xs] =&gt; (lambda (s)
+            (match ((parse x) s)
+               [s1 x1]
+               ((f x1) s1)))
+      x =&gt; (lambda (s) [s x]))
+
+
+f = (lambda (x1)
+      (lambda (s1)
+    (match (parse xs s1)
+           [s2 xs1]
+           [s2 [x1 . xs1]])))
+</code></pre><p>我们把其中 [x . xs] 处理分支拎出来看:</p><pre><code>(lambda (s)
+            (match ((parse x) s)
+               [s1 x1]
+               ((f x1) s1)))
+</code></pre><p>把 (parse x) 改成参数 m</p><pre><code>(lambda (s)
+            (match (m s)
+               [s1 x1]
+               ((f x1) s1)))
+
+m = (parse x)
+</code></pre><p>于是我们重新发明了 state monad 的 bind 函数:</p><pre><code>(defun bind (m f)
+  (lambda (s)
+    (match (m s)
+       [s1 v]
+       ((f v) s1))))
+</code></pre><p>我们可以用 bind 改写 parse 函数：</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (lambda (s) [s (+ x 1)]) where (number? x)
+      [x . xs] =&gt; (bind (parse x) f)
+      x =&gt; (lambda (s) [s x]))
+
+
+f = (lambda (x1)
+      (lambda (s1)
+    (match (parse xs s1)
+           [s2 xs1]
+           [s2 [x1 . xs1]])))
+</code></pre><p>其实 f 也是可以用 bind 继续改写的，注意 f 的 body 部分，变换技巧也是跟前面一样，把 match 之后的多值返回，返回多个值等价于传递一个连续参数 k1:</p><pre><code>(lambda (s1)
+    (match ((parse xs) s1)
+           [s2 xs1]
+           (k1 xs1 s2)))
+
+k1 = (lambda (xs1)
+      (lambda (s2)
+           [s2 [x1 . xs1]]))
+</code></pre><p>于是变成了 (bind f k1)</p><p>也就是说前面的 parse 可以最终写成这个样子：</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (lambda (s) [s (+ x 1)]) where (number? x)
+      [x . xs] =&gt; (bind (parse x)
+            (lambda (x1)
+              (bind (parse xs)
+                (lambda (xs1)
+                  (lambda (s2)
+                    [s2 [x1 . xs1]])))))
+      x =&gt; (lambda (s) [s x]))
+</code></pre><p>我们定义 state monad 的 return：</p><pre><code>(defun return (v)
+  (lambda (s)
+    [s v]))
+</code></pre><p>于是 parse 可以继续用 return 改写：</p><pre><code>(func parse
+      'a =&gt; (lambda (s) [(+ s 1) 'a])
+      x =&gt; (return (+ x 1) where (number? x)
+      [x . xs] =&gt; (bind (parse x)
+            (lambda (x1)
+              (bind (parse xs)
+                (lambda (xs1)
+                  (return [x1 . xs1]))))))
+      x =&gt; (return x))
+</code></pre><p>大功告成！这已经是改成用 monad 写法了。再看一看 state monad 是什么：</p><pre><code>(defun bind (m f)
+  (lambda (s)
+    (match (m s)
+       [s1 v]
+       ((f v) s1))))
+
+(defun return (v)
+  (lambda (s)
+    [s v]))
+</code></pre><p>bind 会接受一个 state monad，以及处理从 monad 提取到的值的函数 f，它会返回一个新的 state monad。
+而 state monad 是什么呢？是一个接受一个状态，返回新的状态和新的值的 closure。从 return 的定义来看这一点理解得更清晰。</p><p>如果用闭包和对象等价的角度来看(&quot;对象是穷人的闭包&quot;)，state monad 是一个对象，&quot;这个对象里面有一个 field 存了状态，当在这个对象上面执行操作的时候，不是直接修改这个对象的 field，而是返回一个新的对象，新的对象中的状态被更新了&quot;。是这样的么？不是！状态是需要传进去的，而不是存储在对象的 field 里面的。需要给这个对象传一个 state，就可以&quot;激活&quot;这个对象了。其实值才是对象中的 field，而状态不是。</p><p>(m s) 让 monad 接受一个状态，就会返回状态和值。用 match (m s) 去处理返回的状态和值，值传递给 f 去生成新的 monad，新的 monad (f v) 再接受老的状态 s1 更新到新的状态和新的值。好绕！</p><hr /><p>2025-06-12 更新</p><p>发现一个更简单的推导</p><p>最初的 (set '<em>var</em> (gensym)) 的方式是不纯的，因此需要改写 parse 成一个纯函数。</p><p>parse 首先需要补一个参数 s，这个输入的状态，也是将要返回的状态。
+由于要同时返回新状态，以及 parse 完的结果，这是一个多值返回，用 cps 的技巧来搞多值返回，需要再被一个参数 k</p><p>于是 parse 的写法：</p><pre><code>(func parse
+      'a s k =&gt; (k (+ s 1) 'a)
+      x s k =&gt; (k s (+ x 1)) where (number? x)
+      [x . xs] s k =&gt; (parse x s
+                 (lambda (s1 x1)
+                   (parse xs s1
+                      (lambda (s2 xs1)
+                    (k s2 [x1 . xs1])))))
+      x s k =&gt; (k s x))
+</code></pre><p>把 s 和 k 两个参数都 curry 化:</p><pre><code>(func parse
+      'a =&gt; (lambda (s k) (k (+ s 1) 'a))
+      x =&gt; (lambda (s k) (k s (+ x 1))) where (number? x)
+      [x . xs]  =&gt; (lambda (s k)
+             (parse x s
+                (lambda (s1 x1)
+                  (parse xs s1
+                     (lambda (s2 xs1)
+                       (k s2 [x1 . xs1]))))))
+      x =&gt; (lambda (s k) (k s x)))
+</code></pre><p>定义 return</p><pre><code>(defun return (x)
+  (lambda (s k)
+    (k s x)))
+</code></pre><p>用 return 改写 parse:</p><pre><code>(func parse
+      'a =&gt; (lambda (s k) (k (+ s 1) 'a))
+      x =&gt; (return (+ x 1) where (number? x)
+      [x . xs]  =&gt; (lambda (s k)
+             (parse x s
+                (lambda (s1 x1)
+                  (parse xs s1
+                     (lambda (s2 xs1)
+                       (k s2 [x1 . xs1]))))))
+      x =&gt; (return x))
+</code></pre><p>好像卡住了，怎么继续推导出：</p><pre><code>(defun bind (m f)
+  (lambda (s)
+    ((m s)
+     (lambda (s1 v)
+       (f v s1)))))
+</code></pre></div><div><a href="/tags/monad" class="btn btn-info btn-xs">monad</a><ul class="pager" /></div></div><div class="col-sm-3" id="sidebar" role="navigation"><div class="well sidebar-nav"><h2 id="nav-pills">Category</h2><ul class="nav nav-pills nav-stacked"><li><a href="/category/编译器">编译器</a></li><li><a href="/category/编程语言">编程语言</a></li><li><a href="/category/高性能服务器">高性能服务器</a></li><li><a href="/category/分布式">分布式</a></li><li><a href="/category/Android游戏开发">Android游戏开发</a></li></ul><h2 id="nav-pills">Tags</h2><a href="/tags/lisp" class="btn btn-info btn-xs">lisp</a><a href="/tags/源代码分析" class="btn btn-info btn-xs">源代码分析</a><a href="/tags/chibi-scheme" class="btn btn-info btn-xs">chibi-scheme</a><a href="/tags/golang" class="btn btn-info btn-xs">golang</a><a href="/tags/rbtree" class="btn btn-info btn-xs">rbtree</a><a href="/tags/mempool" class="btn btn-info btn-xs">mempool</a><a href="/tags/hash" class="btn btn-info btn-xs">hash</a><a href="/tags/task" class="btn btn-info btn-xs">task</a><a href="/tags/协程" class="btn btn-info btn-xs">协程</a><a href="/tags/skynet" class="btn btn-info btn-xs">skynet</a><a href="/tags/beansdb" class="btn btn-info btn-xs">beansdb</a><a href="/tags/actor模型" class="btn btn-info btn-xs">actor模型</a><a href="/tags/lease" class="btn btn-info btn-xs">lease</a><a href="/tags/paxos" class="btn btn-info btn-xs">paxos</a><a href="/tags/面试题" class="btn btn-info btn-xs">面试题</a><a href="/tags/linux" class="btn btn-info btn-xs">linux</a><a href="/tags/org-mode" class="btn btn-info btn-xs">org-mode</a><a href="/tags/blog" class="btn btn-info btn-xs">blog</a><a href="/tags/编码" class="btn btn-info btn-xs">编码</a><a href="/tags/java" class="btn btn-info btn-xs">java</a><a href="/tags/地图编辑器" class="btn btn-info btn-xs">地图编辑器</a><a href="/tags/关卡生成" class="btn btn-info btn-xs">关卡生成</a><a href="/tags/tiled" class="btn btn-info btn-xs">tiled</a><a href="/tags/primitive" class="btn btn-info btn-xs">primitive</a><a href="/tags/scheme" class="btn btn-info btn-xs">scheme</a><a href="/tags/petrescue" class="btn btn-info btn-xs">petrescue</a><a href="/tags/读书笔记" class="btn btn-info btn-xs">读书笔记</a><a href="/tags/eopl" class="btn btn-info btn-xs">eopl</a><a href="/tags/CAS" class="btn btn-info btn-xs">CAS</a><a href="/tags/无锁" class="btn btn-info btn-xs">无锁</a><a href="/tags/数据结构" class="btn btn-info btn-xs">数据结构</a><a href="/tags/FP" class="btn btn-info btn-xs">FP</a><a href="/tags/多值返回" class="btn btn-info btn-xs">多值返回</a><a href="/tags/lambda" class="btn btn-info btn-xs">lambda</a><a href="/tags/AssetManager" class="btn btn-info btn-xs">AssetManager</a><a href="/tags/libgdx" class="btn btn-info btn-xs">libgdx</a><a href="/tags/pprof" class="btn btn-info btn-xs">pprof</a><a href="/tags/微博数据分析" class="btn btn-info btn-xs">微博数据分析</a><a href="/tags/cdn" class="btn btn-info btn-xs">cdn</a><a href="/tags/云风" class="btn btn-info btn-xs">云风</a><a href="/tags/hive" class="btn btn-info btn-xs">hive</a><a href="/tags/调度器" class="btn btn-info btn-xs">调度器</a><a href="/tags/flash" class="btn btn-info btn-xs">flash</a><a href="/tags/planeshift" class="btn btn-info btn-xs">planeshift</a><a href="/tags/分段栈" class="btn btn-info btn-xs">分段栈</a><a href="/tags/terminal" class="btn btn-info btn-xs">terminal</a><a href="/tags/godit" class="btn btn-info btn-xs">godit</a><a href="/tags/转载" class="btn btn-info btn-xs">转载</a><a href="/tags/OpenGL" class="btn btn-info btn-xs">OpenGL</a><a href="/tags/年终总结" class="btn btn-info btn-xs">年终总结</a><a href="/tags/翻译" class="btn btn-info btn-xs">翻译</a><a href="/tags/facebook" class="btn btn-info btn-xs">facebook</a><a href="/tags/编程感悟" class="btn btn-info btn-xs">编程感悟</a><a href="/tags/架构" class="btn btn-info btn-xs">架构</a><a href="/tags/C" class="btn btn-info btn-xs">C</a><a href="/tags/CSP" class="btn btn-info btn-xs">CSP</a><a href="/tags/acme" class="btn btn-info btn-xs">acme</a><a href="/tags/编辑器" class="btn btn-info btn-xs">编辑器</a><a href="/tags/devdraw" class="btn btn-info btn-xs">devdraw</a><a href="/tags/mmorpg" class="btn btn-info btn-xs">mmorpg</a><a href="/tags/ouster" class="btn btn-info btn-xs">ouster</a><a href="/tags/一致性" class="btn btn-info btn-xs">一致性</a><a href="/tags/翻墙" class="btn btn-info btn-xs">翻墙</a><a href="/tags/n6bagent" class="btn btn-info btn-xs">n6bagent</a><a href="/tags/性能优化" class="btn btn-info btn-xs">性能优化</a><a href="/tags/继承" class="btn btn-info btn-xs">继承</a><a href="/tags/接口" class="btn btn-info btn-xs">接口</a><a href="/tags/DSP" class="btn btn-info btn-xs">DSP</a><a href="/tags/aerospike" class="btn btn-info btn-xs">aerospike</a><a href="/tags/kv" class="btn btn-info btn-xs">kv</a><a href="/tags/ssd" class="btn btn-info btn-xs">ssd</a><a href="/tags/raft" class="btn btn-info btn-xs">raft</a><a href="/tags/overcommit" class="btn btn-info btn-xs">overcommit</a><a href="/tags/nosql" class="btn btn-info btn-xs">nosql</a><a href="/tags/coroutine" class="btn btn-info btn-xs">coroutine</a><a href="/tags/plan9" class="btn btn-info btn-xs">plan9</a><a href="/tags/grt" class="btn btn-info btn-xs">grt</a><a href="/tags/database" class="btn btn-info btn-xs">database</a><a href="/tags/垃圾回收" class="btn btn-info btn-xs">垃圾回收</a><a href="/tags/lambda演算" class="btn btn-info btn-xs">lambda演算</a><a href="/tags/网络编程" class="btn btn-info btn-xs">网络编程</a><a href="/tags/epoll" class="btn btn-info btn-xs">epoll</a><a href="/tags/select" class="btn btn-info btn-xs">select</a><a href="/tags/io模型" class="btn btn-info btn-xs">io模型</a><a href="/tags/阻塞" class="btn btn-info btn-xs">阻塞</a><a href="/tags/同步" class="btn btn-info btn-xs">同步</a><a href="/tags/dynomite" class="btn btn-info btn-xs">dynomite</a><a href="/tags/session" class="btn btn-info btn-xs">session</a><a href="/tags/beego" class="btn btn-info btn-xs">beego</a><a href="/tags/codis" class="btn btn-info btn-xs">codis</a><a href="/tags/ycombinator" class="btn btn-info btn-xs">ycombinator</a><a href="/tags/热重启" class="btn btn-info btn-xs">热重启</a><a href="/tags/跳表" class="btn btn-info btn-xs">跳表</a><a href="/tags/skiplist" class="btn btn-info btn-xs">skiplist</a><a href="/tags/监控" class="btn btn-info btn-xs">监控</a><a href="/tags/zipkin" class="btn btn-info btn-xs">zipkin</a><a href="/tags/influxdb" class="btn btn-info btn-xs">influxdb</a><a href="/tags/heka" class="btn btn-info btn-xs">heka</a><a href="/tags/分布式跟踪" class="btn btn-info btn-xs">分布式跟踪</a><a href="/tags/bug" class="btn btn-info btn-xs">bug</a><a href="/tags/gorilla" class="btn btn-info btn-xs">gorilla</a><a href="/tags/middleware" class="btn btn-info btn-xs">middleware</a><a href="/tags/http" class="btn btn-info btn-xs">http</a><a href="/tags/object" class="btn btn-info btn-xs">object</a><a href="/tags/closure" class="btn btn-info btn-xs">closure</a><a href="/tags/nanopass" class="btn btn-info btn-xs">nanopass</a><a href="/tags/位运算" class="btn btn-info btn-xs">位运算</a><a href="/tags/swapcontext" class="btn btn-info btn-xs">swapcontext</a><a href="/tags/汇编" class="btn btn-info btn-xs">汇编</a><a href="/tags/trampoline" class="btn btn-info btn-xs">trampoline</a><a href="/tags/cps" class="btn btn-info btn-xs">cps</a><a href="/tags/continuation" class="btn btn-info btn-xs">continuation</a><a href="/tags/callback" class="btn btn-info btn-xs">callback</a><a href="/tags/closure-convert" class="btn btn-info btn-xs">closure-convert</a><a href="/tags/redis" class="btn btn-info btn-xs">redis</a><a href="/tags/逻辑时钟" class="btn btn-info btn-xs">逻辑时钟</a><a href="/tags/logical clock" class="btn btn-info btn-xs">logical clock</a><a href="/tags/服务发现" class="btn btn-info btn-xs">服务发现</a><a href="/tags/配置中心" class="btn btn-info btn-xs">配置中心</a><a href="/tags/chicken" class="btn btn-info btn-xs">chicken</a><a href="/tags/调试" class="btn btn-info btn-xs">调试</a><a href="/tags/VM" class="btn btn-info btn-xs">VM</a><a href="/tags/srfi-18" class="btn btn-info btn-xs">srfi-18</a><a href="/tags/call/cc" class="btn btn-info btn-xs">call/cc</a><a href="/tags/p2p" class="btn btn-info btn-xs">p2p</a><a href="/tags/delivery" class="btn btn-info btn-xs">delivery</a><a href="/tags/动态规划" class="btn btn-info btn-xs">动态规划</a><a href="/tags/网络" class="btn btn-info btn-xs">网络</a><a href="/tags/lua" class="btn btn-info btn-xs">lua</a><a href="/tags/sql" class="btn btn-info btn-xs">sql</a><a href="/tags/cockroachdb" class="btn btn-info btn-xs">cockroachdb</a><a href="/tags/isolation" class="btn btn-info btn-xs">isolation</a><a href="/tags/snapshot" class="btn btn-info btn-xs">snapshot</a><a href="/tags/serializable" class="btn btn-info btn-xs">serializable</a><a href="/tags/链表" class="btn btn-info btn-xs">链表</a><a href="/tags/ltask" class="btn btn-info btn-xs">ltask</a><a href="/tags/channel" class="btn btn-info btn-xs">channel</a><a href="/tags/leetcode" class="btn btn-info btn-xs">leetcode</a><a href="/tags/Rust" class="btn btn-info btn-xs">Rust</a><a href="/tags/socket" class="btn btn-info btn-xs">socket</a><a href="/tags/interpret" class="btn btn-info btn-xs">interpret</a><a href="/tags/可串行化" class="btn btn-info btn-xs">可串行化</a><a href="/tags/spanner" class="btn btn-info btn-xs">spanner</a><a href="/tags/分布式" class="btn btn-info btn-xs">分布式</a><a href="/tags/transaction" class="btn btn-info btn-xs">transaction</a><a href="/tags/SQL" class="btn btn-info btn-xs">SQL</a><a href="/tags/parser" class="btn btn-info btn-xs">parser</a><a href="/tags/内存池" class="btn btn-info btn-xs">内存池</a><a href="/tags/allocator" class="btn btn-info btn-xs">allocator</a><a href="/tags/combinator" class="btn btn-info btn-xs">combinator</a><a href="/tags/monad" class="btn btn-info btn-xs">monad</a><a href="/tags/ocaml" class="btn btn-info btn-xs">ocaml</a><a href="/tags/abstract machine" class="btn btn-info btn-xs">abstract machine</a><a href="/tags/ZINC" class="btn btn-info btn-xs">ZINC</a><a href="/tags/currying" class="btn btn-info btn-xs">currying</a><a href="/tags/type infer" class="btn btn-info btn-xs">type infer</a><a href="/tags/HM" class="btn btn-info btn-xs">HM</a><a href="/tags/类型系统" class="btn btn-info btn-xs">类型系统</a><a href="/tags/leak" class="btn btn-info btn-xs">leak</a><a href="/tags/reset" class="btn btn-info btn-xs">reset</a><a href="/tags/shift" class="btn btn-info btn-xs">shift</a><a href="/tags/delimited" class="btn btn-info btn-xs">delimited</a><a href="/tags/dectect" class="btn btn-info btn-xs">dectect</a><a href="/tags/race" class="btn btn-info btn-xs">race</a><a href="/tags/schema" class="btn btn-info btn-xs">schema</a><a href="/tags/hybrid logical clock" class="btn btn-info btn-xs">hybrid logical clock</a><a href="/tags/memory" class="btn btn-info btn-xs">memory</a><a href="/tags/TiDB" class="btn btn-info btn-xs">TiDB</a><a href="/tags/pattern match" class="btn btn-info btn-xs">pattern match</a><a href="/tags/shen" class="btn btn-info btn-xs">shen</a><a href="/tags/context" class="btn btn-info btn-xs">context</a><a href="/tags/缤果盒子" class="btn btn-info btn-xs">缤果盒子</a><a href="/tags/variant" class="btn btn-info btn-xs">variant</a><a href="/tags/pool" class="btn btn-info btn-xs">pool</a><a href="/tags/goroutine" class="btn btn-info btn-xs">goroutine</a><a href="/tags/morestack" class="btn btn-info btn-xs">morestack</a><a href="/tags/RC" class="btn btn-info btn-xs">RC</a><a href="/tags/SI" class="btn btn-info btn-xs">SI</a><a href="/tags/opentracing" class="btn btn-info btn-xs">opentracing</a><a href="/tags/klambda" class="btn btn-info btn-xs">klambda</a><a href="/tags/优化" class="btn btn-info btn-xs">优化</a><a href="/tags/Cello" class="btn btn-info btn-xs">Cello</a><a href="/tags/fat pointer" class="btn btn-info btn-xs">fat pointer</a><a href="/tags/eval" class="btn btn-info btn-xs">eval</a><a href="/tags/ddl" class="btn btn-info btn-xs">ddl</a><a href="/tags/codegen" class="btn btn-info btn-xs">codegen</a><a href="/tags/expression" class="btn btn-info btn-xs">expression</a><a href="/tags/erlang" class="btn btn-info btn-xs">erlang</a><a href="/tags/withcancel" class="btn btn-info btn-xs">withcancel</a><a href="/tags/constant propagate" class="btn btn-info btn-xs">constant propagate</a><a href="/tags/KISS" class="btn btn-info btn-xs">KISS</a><a href="/tags/性能" class="btn btn-info btn-xs">性能</a><a href="/tags/macro" class="btn btn-info btn-xs">macro</a><a href="/tags/hygiene" class="btn btn-info btn-xs">hygiene</a><a href="/tags/er-macro-transform" class="btn btn-info btn-xs">er-macro-transform</a><a href="/tags/cora" class="btn btn-info btn-xs">cora</a><a href="/tags/module" class="btn btn-info btn-xs">module</a><a href="/tags/错误处理" class="btn btn-info btn-xs">错误处理</a><a href="/tags/contract" class="btn btn-info btn-xs">contract</a><a href="/tags/union store" class="btn btn-info btn-xs">union store</a><a href="/tags/calvin" class="btn btn-info btn-xs">calvin</a><a href="/tags/bytecode" class="btn btn-info btn-xs">bytecode</a><a href="/tags/JVM" class="btn btn-info btn-xs">JVM</a><a href="/tags/aurora" class="btn btn-info btn-xs">aurora</a><a href="/tags/tidb" class="btn btn-info btn-xs">tidb</a><a href="/tags/vm" class="btn btn-info btn-xs">vm</a><a href="/tags/executor" class="btn btn-info btn-xs">executor</a><a href="/tags/covariance" class="btn btn-info btn-xs">covariance</a><a href="/tags/GC" class="btn btn-info btn-xs">GC</a><a href="/tags/oberon" class="btn btn-info btn-xs">oberon</a><a href="/tags/sysbench" class="btn btn-info btn-xs">sysbench</a><a href="/tags/effect" class="btn btn-info btn-xs">effect</a><a href="/tags/await" class="btn btn-info btn-xs">await</a><a href="/tags/async" class="btn btn-info btn-xs">async</a><a href="/tags/promise" class="btn btn-info btn-xs">promise</a><a href="/tags/interface" class="btn btn-info btn-xs">interface</a><a href="/tags/privilege" class="btn btn-info btn-xs">privilege</a><a href="/tags/test" class="btn btn-info btn-xs">test</a><a href="/tags/inferno" class="btn btn-info btn-xs">inferno</a><a href="/tags/microKanren" class="btn btn-info btn-xs">microKanren</a><a href="/tags/miniKanren" class="btn btn-info btn-xs">miniKanren</a><a href="/tags/zenlife" class="btn btn-info btn-xs">zenlife</a><a href="/tags/domain" class="btn btn-info btn-xs">domain</a><a href="/tags/HLC" class="btn btn-info btn-xs">HLC</a><a href="/tags/distributed" class="btn btn-info btn-xs">distributed</a><a href="/tags/deadlock" class="btn btn-info btn-xs">deadlock</a><a href="/tags/encrypt" class="btn btn-info btn-xs">encrypt</a><a href="/tags/authentication" class="btn btn-info btn-xs">authentication</a><a href="/tags/binlog" class="btn btn-info btn-xs">binlog</a><a href="/tags/probability" class="btn btn-info btn-xs">probability</a><a href="/tags/hotspot" class="btn btn-info btn-xs">hotspot</a><a href="/tags/makefile" class="btn btn-info btn-xs">makefile</a><a href="/tags/cache" class="btn btn-info btn-xs">cache</a><a href="/tags/ffi" class="btn btn-info btn-xs">ffi</a><a href="/tags/itx" class="btn btn-info btn-xs">itx</a><a href="/tags/prepare" class="btn btn-info btn-xs">prepare</a><a href="/tags/code review" class="btn btn-info btn-xs">code review</a><a href="/tags/darkeden" class="btn btn-info btn-xs">darkeden</a><a href="/tags/dependent" class="btn btn-info btn-xs">dependent</a><a href="/tags/type" class="btn btn-info btn-xs">type</a><a href="/tags/koka" class="btn btn-info btn-xs">koka</a><a href="/tags/引用计数" class="btn btn-info btn-xs">引用计数</a><a href="/tags/algebraic effect" class="btn btn-info btn-xs">algebraic effect</a><a href="/tags/RWMutex" class="btn btn-info btn-xs">RWMutex</a><a href="/tags/软件工程" class="btn btn-info btn-xs">软件工程</a><a href="/tags/开发环境" class="btn btn-info btn-xs">开发环境</a><a href="/tags/code generation" class="btn btn-info btn-xs">code generation</a><a href="/tags/CI" class="btn btn-info btn-xs">CI</a><a href="/tags/regex" class="btn btn-info btn-xs">regex</a><a href="/tags/PEG" class="btn btn-info btn-xs">PEG</a><a href="/tags/architecture" class="btn btn-info btn-xs">architecture</a><a href="/tags/cloud native" class="btn btn-info btn-xs">cloud native</a><a href="/tags/gambit" class="btn btn-info btn-xs">gambit</a><a href="/tags/ebpf" class="btn btn-info btn-xs">ebpf</a><a href="/tags/bpftrace" class="btn btn-info btn-xs">bpftrace</a><a href="/tags/流控" class="btn btn-info btn-xs">流控</a><a href="/tags/oom" class="btn btn-info btn-xs">oom</a><a href="/tags/severless" class="btn btn-info btn-xs">severless</a><a href="/tags/coprocessor" class="btn btn-info btn-xs">coprocessor</a><a href="/tags/treadmill" class="btn btn-info btn-xs">treadmill</a><a href="/tags/MVCC" class="btn btn-info btn-xs">MVCC</a><a href="/tags/hole digging" class="btn btn-info btn-xs">hole digging</a><a href="/tags/NAT" class="btn btn-info btn-xs">NAT</a><a href="/tags/reverse proxying" class="btn btn-info btn-xs">reverse proxying</a><a href="/tags/tunnel" class="btn btn-info btn-xs">tunnel</a><a href="/tags/累积分布函数" class="btn btn-info btn-xs">累积分布函数</a><a href="/tags/eCDF" class="btn btn-info btn-xs">eCDF</a><a href="/tags/SEDA" class="btn btn-info btn-xs">SEDA</a><a href="/tags/top-of-stack-caching" class="btn btn-info btn-xs">top-of-stack-caching</a><a href="/tags/exception" class="btn btn-info btn-xs">exception</a><a href="/tags/resumable" class="btn btn-info btn-xs">resumable</a><a href="/tags/string" class="btn btn-info btn-xs">string</a><a href="/tags/ActivityPub" class="btn btn-info btn-xs">ActivityPub</a><a href="/tags/mastodon" class="btn btn-info btn-xs">mastodon</a><a href="/tags/schedule" class="btn btn-info btn-xs">schedule</a><a href="/tags/concurrent" class="btn btn-info btn-xs">concurrent</a><a href="/tags/lru" class="btn btn-info btn-xs">lru</a><a href="/tags/scale" class="btn btn-info btn-xs">scale</a><a href="/tags/recursive" class="btn btn-info btn-xs">recursive</a><a href="/tags/patch" class="btn btn-info btn-xs">patch</a><a href="/tags/go" class="btn btn-info btn-xs">go</a><a href="/tags/bazel" class="btn btn-info btn-xs">bazel</a><a href="/tags/union scan" class="btn btn-info btn-xs">union scan</a><a href="/tags/technical debt" class="btn btn-info btn-xs">technical debt</a><a href="/tags/library" class="btn btn-info btn-xs">library</a><a href="/tags/framework" class="btn btn-info btn-xs">framework</a><a href="/tags/queueing delay" class="btn btn-info btn-xs">queueing delay</a><a href="/tags/queueing theory" class="btn btn-info btn-xs">queueing theory</a><a href="/tags/queueing" class="btn btn-info btn-xs">queueing</a><a href="/tags/threaded-code" class="btn btn-info btn-xs">threaded-code</a><a href="/tags/jit" class="btn btn-info btn-xs">jit</a><a href="/tags/copy-and-patch" class="btn btn-info btn-xs">copy-and-patch</a><a href="/tags/fips" class="btn btn-info btn-xs">fips</a><a href="/tags/delimited-continuation" class="btn btn-info btn-xs">delimited-continuation</a><a href="/tags/tailfication" class="btn btn-info btn-xs">tailfication</a><a href="/tags/clean code" class="btn btn-info btn-xs">clean code</a><a href="/tags/design" class="btn btn-info btn-xs">design</a><a href="/tags/AI" class="btn btn-info btn-xs">AI</a><a href="/tags/软件事务内存" class="btn btn-info btn-xs">软件事务内存</a><a href="/tags/STM" class="btn btn-info btn-xs">STM</a><a href="/tags/debugger" class="btn btn-info btn-xs">debugger</a><a href="/tags/namebase" class="btn btn-info btn-xs">namebase</a><a href="/tags/r7rs" class="btn btn-info btn-xs">r7rs</a><a href="/tags/namespace" class="btn btn-info btn-xs">namespace</a><a href="/tags/package" class="btn btn-info btn-xs">package</a><a href="/tags/mark-sweep" class="btn btn-info btn-xs">mark-sweep</a><a href="/tags/mostly-copying" class="btn btn-info btn-xs">mostly-copying</a><a href="/tags/tailcall" class="btn btn-info btn-xs">tailcall</a><a href="/tags/cml" class="btn btn-info btn-xs">cml</a><a href="/tags/type checker" class="btn btn-info btn-xs">type checker</a><a href="/tags/gc" class="btn btn-info btn-xs">gc</a><a href="/tags/am40" class="btn btn-info btn-xs">am40</a><a href="/tags/旁路由" class="btn btn-info btn-xs">旁路由</a><a href="/tags/nas" class="btn btn-info btn-xs">nas</a><a href="/tags/tracing" class="btn btn-info btn-xs">tracing</a><a href="/tags/multicore" class="btn btn-info btn-xs">multicore</a><a href="/tags/concurrency" class="btn btn-info btn-xs">concurrency</a><a href="/tags/rust" class="btn btn-info btn-xs">rust</a><a href="/tags/cranelift" class="btn btn-info btn-xs">cranelift</a></div></div></div></div><hr /><footer><p class="nav navbar-nav navbar-right">Powered by <a href="https://clojure.org/">Clojure</a> &amp; <a href="//getbootstrap.com/">Bootstrap</a></p></footer></body></html>
