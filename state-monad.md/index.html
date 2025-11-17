@@ -39,7 +39,7 @@
 </code></pre><p>接下来，我们重点为看 (parse x s) 的返回处理，</p><pre><code>(match (parse x s)
        [s1 x1]
        ...body)
-</code></pre><p>这是一个多值返回，在<a href="multiple-returns-in-scheme.md">多值返回那篇博客</a>中，我们记得<em>返回多个值 s1 x1 等价于接受一个 k 然后调用 (k s1 x1)</em>。</p><pre><code>(match (parse x s)
+</code></pre><p>这是一个多值返回，在<a href="/multiple-returns-in-scheme.md">多值返回那篇博客</a>中，我们记得<em>返回多个值 s1 x1 等价于接受一个 k 然后调用 (k s1 x1)</em>。</p><pre><code>(match (parse x s)
     [s1 x1]
     (k s1 x1))
 
@@ -76,7 +76,7 @@ f = (lambda (x1)
     (match (parse xs s1)
            [s2 xs1]
            [s2 [x1 . xs1]])))
-</code></pre><p>我们把其中 [x . xs] 处理分支拎出来看:</p><pre><code>(lambda (s)
+</code></pre><p>我们把其中 [x . xs] 处理分支拧出来看:</p><pre><code>(lambda (s)
             (match ((parse x) s)
                [s1 x1]
                ((f x1) s1)))
@@ -151,30 +151,30 @@ k1 = (lambda (xs1)
                  (lambda (s1 x1)
                    (parse xs s1
                       (lambda (s2 xs1)
-                    (k s2 [x1 . xs1])))))
+                    (k s2 [x1 . xs1]])))))
       x s k =&gt; (k s x))
 </code></pre><p>把 s 和 k 两个参数都 curry 化:</p><pre><code>(func parse
-      'a =&gt; (lambda (s k) (k (+ s 1) 'a))
+      'a =&gt; (return 'a)
       x =&gt; (lambda (s k) (k s (+ x 1))) where (number? x)
       [x . xs]  =&gt; (lambda (s k)
              (parse x s
                 (lambda (s1 x1)
                   (parse xs s1
                      (lambda (s2 xs1)
-                       (k s2 [x1 . xs1]))))))
-      x =&gt; (lambda (s k) (k s x)))
+                       (k s2 [x1 . xs1]]))))))
+      x =&gt; (return x))
 </code></pre><p>定义 return</p><pre><code>(defun return (x)
   (lambda (s k)
     (k s x)))
 </code></pre><p>用 return 改写 parse:</p><pre><code>(func parse
-      'a =&gt; (lambda (s k) (k (+ s 1) 'a))
-      x =&gt; (return (+ x 1) where (number? x)
+      'a =&gt; (return 'a)
+      x =&gt; (lambda (s k) (k s (+ x 1))) where (number? x)
       [x . xs]  =&gt; (lambda (s k)
              (parse x s
                 (lambda (s1 x1)
                   (parse xs s1
                      (lambda (s2 xs1)
-                       (k s2 [x1 . xs1]))))))
+                       (k s2 [x1 . xs1]]))))))
       x =&gt; (return x))
 </code></pre><p>好像卡住了，怎么继续推导出：</p><pre><code>(defun bind (m f)
   (lambda (s)

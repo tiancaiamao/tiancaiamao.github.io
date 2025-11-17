@@ -19,7 +19,7 @@
 9 #&gt; (mylet a 3 b 5 (+ a b))
 8
 </code></pre><pre><code>(defmacro m (exp) body)
-</code></pre><p>实现上仅仅是给变量 m 绑定一个 macro 特殊表。</p><p>而到调用 <code>(m xxx)</code> 的时候会先 eval a，发现结果是一个宏，然后使用宏展开，再进行展开之后的 eval。</p><p>真正可以算语言设计层面的，是故意采纳了非卫生宏。卫生宏的实现更复杂，而且我感觉属于偏学术而不是真正解决实际问题的特性，因此在 cora 里面没有采用。</p><h2>严格尾递归</h2><p>cora 是要求严格尾递归的，这点跟 scheme 强调的一样。这个 feature 成为必须的理由，是来自于我在<a href="two-lisp-macro-design-thoughts.md">实现宏的过程中的观察</a>。如果不支持尾递归，在做 pattern match 宏的时候很容易展开后的代码变成非尾递归的，然后爆栈。</p><p>比如这么写代码，总不能爆栈吧：</p><pre><code>(func f
+</code></pre><p>实现上仅仅是给变量 m 绑定一个 macro 特殊表。</p><p>而到调用 <code>(m xxx)</code> 的时候会先 eval a，发现结果是一个宏，然后使用宏展开，再进行展开之后的 eval。</p><p>真正可以算语言设计层面的，是故意采纳了非卫生宏。卫生宏的实现更复杂，而且我感觉属于偏学术而不是真正解决实际问题的特性，因此在 cora 里面没有采用。</p><h2>严格尾递归</h2><p>cora 是要求严格尾递归的，这点跟 scheme 强调的一样。这个 feature 成为必须的理由，是来自于我在<a href="/two-lisp-macro-design-thoughts.md">实现宏的过程中的观察</a>。如果不支持尾递归，在做 pattern match 宏的时候很容易展开后的代码变成非尾递归的，然后爆栈。</p><p>比如这么写代码，总不能爆栈吧：</p><pre><code>(func f
       0 =&gt; 42
       n =&gt; (f (- n 1)))
 (f 9999999)
@@ -33,7 +33,7 @@
   (list x y z) x
   (list-rest a b) b
   x x)
-</code></pre><p>其实我<a href="lisp-better-syntax.md">之前已经提过了</a>，应该 <strong>让 pattern 匹配的对象，跟构造这个对象使用的同一种语法</strong>。</p><p>值得一提的是 list-rest。list-rest 是将前面的 pattern 匹配到单个变量，而最后一个变量匹配剩下的链表部分。比如：</p><pre><code>3 #&gt; (match (list 1 2 3 4 5 6) (list-rest a b c d) d)
+</code></pre><p>其实我<a href="/lisp-better-syntax.md">之前已经提过了</a>，应该 <strong>让 pattern 匹配的对象，跟构造这个对象使用的同一种语法</strong>。</p><p>值得一提的是 list-rest。list-rest 是将前面的 pattern 匹配到单个变量，而最后一个变量匹配剩下的链表部分。比如：</p><pre><code>3 #&gt; (match (list 1 2 3 4 5 6) (list-rest a b c d) d)
 (4 5 6)
 </code></pre><p>这里面 a b c 分别会匹配 1 2 3，而剩下的部分 d 匹配到 (4 5 6)</p><p>其它的理解起来都很简单，<code>42</code> 匹配常量；<code>(quote s)</code> 匹配符号 <code>s</code>； <code>(cons a b)</code> 匹配一个 cons，<code>(list x y z)</code> 匹配 3 个元素的链表；上面的表达式最后会返回 1。</p><p>所有模式都是可组合的，比如这种 <code>(cons (list a 1) 'xx)</code></p><h2>func 宏</h2><p>cora 鼓励优先使用 func 来定义函数。func 是一个宏，这个 syntax 明显是受了 Go 的启发，使用是这样子：</p><pre><code>(func filter-h
       res fn () =&gt; (reverse res)
