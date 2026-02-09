@@ -1,0 +1,238 @@
+<html lang="zh_CN"><head><meta charset="utf-8" /><title>教 AI 学习 cora 语言</title><link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css" /></head><body><div class="navbar navbar-inverse"><div class="container"><div class="collapse navbar-collapse"><ul class="nav navbar-nav"><li><a href="/">Home</a></li><li><a href="/index">Blog</a></li><li><a href="/project">Project</a></li><li><a href="/about">About</a></li><li><a href="/feed.atom">Rss</a></li></ul></div></div></div><div class="container"><div class="row row-offcanvas row-offcanvas-right"><div class="col-sm-9"><div id="content"><h1 id="Title">教 AI 学习 cora 语言</h1><p>2026-02-06</p><p>未来的代码都不会是人类手写的了。</p><p>我自己发明了一门编程语言叫 cora，它是个 lisp1 方言。但是，既然<strong>我自己都已经不手写代码了，那我们还要发明自己的编程语言搞毛呀</strong>？</p><p>突发奇想，其实我可以教会 AI 使用我发明的 cora 语言，然后 AI 就可以用 cora 语言帮我写代码了。</p><p>曾经我觉得，最适合 AI 时代的编程语言，应该是那些成熟的老牌语言，像 c/c++ 这类。理由是训练过程中它能接触到海量的素材，从而掌控这门语言。</p><p>另外就是像 rust 这类的，内存安全，强类型，写得出来就能正确跑的语言。虽然写的时候心智负担高，很恶心人，但是写出来之后能跑，这很适合给 AI 扬长避短。</p><p>还有一个输入是来自我之前的体感，使用 odin 之类的新兴语言，在 AI 写代码的时候会有不少幻觉，有语法错误的，有把其它语言的框架和库当作是这门语言的...所以我之前认为新兴语言机会反而更少。</p><p>其实这个事情是有补救的！因为 AI 有学习能力，我们只要给它正确的 prompt，就可以教会它使用一门新语言。</p><p>现在我来验证这个想法。</p><p>第一步，我去 chatgpt 那边问了问，像这样的 prompt 需要写哪些内容，它给了我一个回答，包括例子和模板。它给了我一个这样的东西：</p><pre><code>你将学习并使用一门“你之前从未见过”的编程语言：&lt;语言名&gt;。
+
+重要约束：
+1. 你只能依据我提供的资料理解这门语言
+2. 不允许使用你对其他语言的类比，除非我明确允许
+3. 如果资料不足以确定行为，请明确说明“不确定”
+
+--------------------------------
+【语言概览】
+- 设计目标：
+- 运行模型：
+- 类型系统：
+- 错误处理方式：
+
+--------------------------------
+【核心语法示例】
+示例 1（解释逐行语义）：
+&lt;code&gt;
+
+示例 2（包含常见错误）：
+&lt;code&gt;
+
+--------------------------------
+【语义规则（非常重要）】
+- 规则 1：
+- 规则 2：
+- 违反后果：
+
+--------------------------------
+【禁止事项】
+- 永远不要……
+- 在以下情况下禁止使用……
+
+--------------------------------
+【你的任务】
+从现在开始：
+- 所有示例代码必须符合以上规则
+- 如果我给出错误代码，请指出并解释违反了哪条规则
+</code></pre><p>第二步，我在 cora 的代码仓库目录，打开了 codex (gpt5.2 high)，我把 chatgpt 生成的模板喂给它。要求它读项目源代码并理解，因为项目源代码是有不少 cora 语言写的代码的，它可以学习到所需要的内容。然后让它根据模板示例，创建这门语言的 prompt。</p><p>这是它生成出来的内容，我上传到 github gist 了。<a href="https://gist.github.com/tiancaiamao/f6177f7999d2e411efb9a45954e633b8">prompt0.md</a></p><p>我发现这个 prompt 很精炼。我担心这是否太于精炼了，不利于 AI 学习。</p><p>于是我找了另一个例子，<a href="https://odin-lang.org/docs/demo/">odin 语言的 demo</a> 作为模板，让它不要拘泥于之前的模板格式，重新生成了一份。</p><p>这是生成的第二份 <a href="https://gist.github.com/tiancaiamao/d8c535beb0a809358623d56fff1e051b">prompt1.md</a></p><p>第三步，我换了工具和模型 claude code (glm4.7) 用来交叉校验这个 prompt 写得好不好，能不能让 AI 学会 cora 语言。</p><p>我让 claude 阅读这两份 prompt，判断哪一份 prompt 写得更好一些，更能够有效地让它学会 cora 语言。结果自然是第二份，因为内容更长，示例也更多。</p><p>然后，我告诉 claude，&quot;你已经学会 cora 语言了，现在帮我写一个 cora 语言的解释器，就用 cora 语言写&quot;。这一步的时候，它做弊了。它说，这个任务很复杂，让我来先准备一个 plan。然后它说，让我先阅读当前的项目代码... (我正好在 cora 项目的目录启动的 claude)。</p><p>所以 claude 实际上读到了关于 cora 的实现，而不仅仅是那份 prompt。在它还没完成 plan ，我打断了它，告诉它，&quot;我要求的并不是要写一个 cora 解释器。我只是通过这个来检验它对 cora 语言的理解和掌握，是否通过 prompt 就学会了 cora 语言。甚至都不需要解释器的实现完全能跑，只要语法语义层面正确即可&quot;。</p><p>接下来它尝试实现。我阅读了它实现上面所犯的错误，其实犯错也不多，主要是在 match 那一块的语法。我给它指出来，然后让它生成 patch.md。</p><p>写完了解释器之后，我又让它换一些例子，随便写一些 cora 代码。目的是验证它掌握了这门语言。来来回回处理了几轮之后，都更新到了 patch.md</p><p>我把 <a href="https://gist.github.com/tiancaiamao/9ef1d2926e081c1060769e68deaa45d7">patch.md</a> 也放出来。</p><p>第四步，我让它结合 prompt0 prompt1 和 patch，生成 prompt2.md</p><p>我告诉它，prompt0 写得很精炼简洁并且准确，告诉它 prompt1 里面写了很多 demo 有利于 AI 学习和掌握。而我要求它给我生成的 prompt2 要有两者优点，既能很精炼简洁，又能有提供例子让 AI 真正学会这门语言。</p><p>然后 patch 是犯过的错误，需要避免。</p><p>最终生成出来了 <a href="https://gist.github.com/tiancaiamao/507adfcd49a22ea7184d9481828de1a1">prompt2.md</a>。</p><p>第五步，再次回测。这次我创建了一个新的空文件夹，然后把 prompt2.md 拷贝过去，换到 codex。它现在只能参考 prompt2，我让它写一个 cora 或者 lisp 方言的解释器出来。用 cora 语言写，我来检验它对这门语言的掌握。</p><p>通过这一份 prompt，它基本上真的掌握如何用 cora 语言写代码了。</p><p>以上就是我如何教 AI 学习 cora 语言的。Have fun!</p><p>附(AI 生成的代码，证明它学会了)：</p><hr /><p>• 已阅读 prompt2.md。下面给出一个 Cora 语言 的解释器草案，严格按你给的规范写，重点是语法/语义正确而不是可运行。</p><p>不确定点（规范未给出，只能显式标注）</p><ul><li>reader 对 []、[x . xs]、'x 的具体 AST 形式未定义，我在 pat-match 中假设 [] → (list)、[x y] → (list x y)、[x . xs] → (list-rest x xs)、'x → (quote x)。</li><li>未给出 symbol?、sym=?、= 的存在性与语义，这里假设它们存在且满足直觉：symbol? 判断符号，sym=? 比较符号，= 比较数/字符串/布尔。</li><li>try/throw 的 continuation 语义未完整定义，这里用 ['throw v] 的 tag 方式显式传递，只保证“handler 内 throw 不重入”的效果。</li></ul><p>Cora 解释器（核心 eval2 + match + 部分应用）</p><pre><code>  ;; 结果封装：['ok v] / ['throw v]
+  (func ok v =&gt; ['ok v])
+  (func thrown v =&gt; ['throw v])
+
+  (func bind-eval
+    ['ok v] k =&gt; (k v)
+    ['throw v] k =&gt; ['throw v])
+
+  (func bool?
+    true =&gt; true
+    false =&gt; true
+    _ =&gt; false)
+
+  (func empty?
+    [] =&gt; true
+    _ =&gt; false)
+
+  (func append
+    [] ys =&gt; ys
+    [x . xs] ys =&gt; [x . (append xs ys)])
+
+  ;; 环境：alist，绑定为 [sym . val]
+  (func env-extend
+    env k v =&gt; [[k . v] . env])
+
+  (func env-extend-list
+    env [] =&gt; env
+    env [[k . v] . rest] =&gt; (env-extend-list (env-extend env k v) rest))
+
+  (func env-lookup
+    [] k =&gt; (thrown ['unbound k])
+    [[key . val] . rest] k =&gt;
+      (if (sym=? key k) (ok val) (env-lookup rest k)))
+
+  ;; 列表工具
+  (func list-length
+    [] =&gt; 0
+    [_ . xs] =&gt; (+ 1 (list-length xs)))
+
+  (func take
+    0 xs =&gt; []
+    n [] =&gt; []
+    n [x . xs] =&gt; [x . (take (- n 1) xs)])
+
+  (func drop
+    0 xs =&gt; xs
+    n [] =&gt; []
+    n [_ . xs] =&gt; (drop (- n 1) xs))
+
+  (func bind-params
+    [] [] env =&gt; env
+    [p . ps] [v . vs] env =&gt; (bind-params ps vs (env-extend env p v)))
+
+  ;; 参数求值（左到右）
+  (func eval-args
+    [] env =&gt; (ok [])
+    [a . rest] env =&gt;
+      (bind-eval (eval2 a env)
+        (lambda (av)
+          (bind-eval (eval-args rest env)
+            (lambda (rv)
+              (ok [av . rv]))))))
+
+  ;; 应用：部分应用 / 过度应用
+  (func apply-closure
+    params body cenv args =&gt;
+      (let pn (list-length params)
+        (let an (list-length args)
+          (if (= an pn)
+              (eval2 body (bind-params params args cenv))
+              (if (&gt; pn an)
+                  (ok ['closure (drop an params) body (bind-params (take an params) args cenv)])
+                  (bind-eval (eval2 body (bind-params params (take pn args) cenv))
+                    (lambda (fv)
+                      (apply2 fv (drop pn args)))))))))
+
+  ;; 原语（固定参数）
+  (func apply-prim
+    '+ [a b] =&gt; (ok (+ a b))
+    '- [a b] =&gt; (ok (- a b))
+    '* [a b] =&gt; (ok (* a b))
+    '/ [a b] =&gt; (ok (/ a b))
+    'cons [a b] =&gt; (ok (cons a b))
+    'car [p] =&gt; (ok (car p))
+    'cdr [p] =&gt; (ok (cdr p))
+    _ _ =&gt; (thrown ['bad-prim]))
+
+  (func apply2
+    ['closure params body cenv] args =&gt; (apply-closure params body cenv args)
+    ['prim name] args =&gt; (apply-prim name args)
+    f _ =&gt; (thrown ['not-callable f]))
+
+  ;; 模式匹配：返回 ['ok bindings] 或 ['fail]
+  (func match-bind
+    ['ok b] k =&gt; (k b)
+    ['fail] k =&gt; ['fail])
+
+  (func pat-match
+    '_' _ =&gt; ['ok []]
+    ['quote sym] v =&gt;
+      (if (sym=? v sym) ['ok []] ['fail])
+    ['list] v =&gt;
+      (if (empty? v) ['ok []] ['fail])
+    ['list . ps] v =&gt; (pat-match-list ps v)
+    ['list-rest p1 prest] v =&gt; (pat-match-cons p1 prest v)
+    p v =&gt;
+      (if (symbol? p)
+          ['ok [[p . v]]]
+          (if (= p v) ['ok []] ['fail])))
+
+  (func pat-match-list
+    [] v =&gt; (if (empty? v) ['ok []] ['fail])
+    [p . ps] v =&gt;
+      (match v
+        [x . xs]
+          (match-bind (pat-match p x)
+            (lambda (b1)
+              (match-bind (pat-match-list ps xs)
+                (lambda (b2)
+                  ['ok (append b1 b2)]))))
+        _ ['fail]))
+
+  (func pat-match-cons
+    p1 prest v =&gt;
+      (match v
+        [x . xs]
+          (match-bind (pat-match p1 x)
+            (lambda (b1)
+              (match-bind (pat-match prest xs)
+                (lambda (b2)
+                  ['ok (append b1 b2)]))))
+        _ ['fail]))
+
+  (func eval-match
+    v [] env =&gt; (thrown ['match-fail v])
+    v [pat expr . rest] env =&gt;
+      (match (pat-match pat v)
+        ['ok binds] (eval2 expr (env-extend-list env binds))
+        ['fail] (eval-match v rest env)))
+
+  ;; eval2：严格求值 + try/throw
+  (func eval2
+    true env =&gt; (ok true)
+    false env =&gt; (ok false)
+    ['quote x] env =&gt; (ok x)
+    ['if t a b] env =&gt;
+      (bind-eval (eval2 t env)
+        (lambda (tv)
+          (if (bool? tv)
+              (if tv (eval2 a env) (eval2 b env))
+              (thrown ['type-error 'if tv]))))
+    ['do a b] env =&gt;
+      (bind-eval (eval2 a env)
+        (lambda (ignored)
+          (eval2 b env)))
+    ['lambda params body] env =&gt;
+      (ok ['closure params body env])
+    ['let x v body] env =&gt;
+      (bind-eval (eval2 v env)
+        (lambda (vv)
+          (eval2 body (env-extend env x vv))))
+    ['match v . rules] env =&gt;
+      (bind-eval (eval2 v env)
+        (lambda (vv)
+          (eval-match vv rules env)))
+    ['try thunk handler] env =&gt;
+      (bind-eval (eval2 thunk env)
+        (lambda (tv)
+          (match (apply2 tv [])
+            ['ok r] ['ok r]
+            ['throw err]
+              (bind-eval (eval2 handler env)
+                (lambda (hv)
+                  (apply2 hv [err]))))))
+    ['throw v] env =&gt;
+      (bind-eval (eval2 v env) thrown)
+    [f . args] env =&gt;
+      (bind-eval (eval2 f env)
+        (lambda (fv)
+          (bind-eval (eval-args args env)
+            (lambda (av)
+              (apply2 fv av)))))
+    sym env =&gt; (env-lookup env sym) where (symbol? sym)
+    atom env =&gt; (ok atom))
+
+  (func initial-env
+    () =&gt;
+      [
+        ['+ . ['prim '+]]
+        ['- . ['prim '-]]
+        ['* . ['prim '*]]
+        ['/ . ['prim '/]]
+        ['cons . ['prim 'cons]]
+        ['car . ['prim 'car]]
+        ['cdr . ['prim 'cdr]]
+      ])
+
+  (func interpret
+    exp =&gt; (eval2 exp (initial-env)))
+</code></pre></div><div><a href="/tags/AI" class="btn btn-info btn-xs">AI</a><a href="/tags/cora" class="btn btn-info btn-xs">cora</a><ul class="pager" /></div></div><div class="col-sm-3" id="sidebar" role="navigation"><div class="well sidebar-nav"><h2 id="nav-pills">Category</h2><ul class="nav nav-pills nav-stacked"><li><a href="/category/编译器">编译器</a></li><li><a href="/category/编程语言">编程语言</a></li><li><a href="/category/高性能服务器">高性能服务器</a></li><li><a href="/category/分布式">分布式</a></li><li><a href="/category/Android游戏开发">Android游戏开发</a></li></ul><h2 id="nav-pills">Tags</h2><a href="/tags/lisp" class="btn btn-info btn-xs">lisp</a><a href="/tags/源代码分析" class="btn btn-info btn-xs">源代码分析</a><a href="/tags/chibi-scheme" class="btn btn-info btn-xs">chibi-scheme</a><a href="/tags/golang" class="btn btn-info btn-xs">golang</a><a href="/tags/rbtree" class="btn btn-info btn-xs">rbtree</a><a href="/tags/mempool" class="btn btn-info btn-xs">mempool</a><a href="/tags/hash" class="btn btn-info btn-xs">hash</a><a href="/tags/task" class="btn btn-info btn-xs">task</a><a href="/tags/协程" class="btn btn-info btn-xs">协程</a><a href="/tags/skynet" class="btn btn-info btn-xs">skynet</a><a href="/tags/beansdb" class="btn btn-info btn-xs">beansdb</a><a href="/tags/actor模型" class="btn btn-info btn-xs">actor模型</a><a href="/tags/lease" class="btn btn-info btn-xs">lease</a><a href="/tags/paxos" class="btn btn-info btn-xs">paxos</a><a href="/tags/面试题" class="btn btn-info btn-xs">面试题</a><a href="/tags/linux" class="btn btn-info btn-xs">linux</a><a href="/tags/org-mode" class="btn btn-info btn-xs">org-mode</a><a href="/tags/blog" class="btn btn-info btn-xs">blog</a><a href="/tags/编码" class="btn btn-info btn-xs">编码</a><a href="/tags/java" class="btn btn-info btn-xs">java</a><a href="/tags/地图编辑器" class="btn btn-info btn-xs">地图编辑器</a><a href="/tags/关卡生成" class="btn btn-info btn-xs">关卡生成</a><a href="/tags/tiled" class="btn btn-info btn-xs">tiled</a><a href="/tags/primitive" class="btn btn-info btn-xs">primitive</a><a href="/tags/scheme" class="btn btn-info btn-xs">scheme</a><a href="/tags/petrescue" class="btn btn-info btn-xs">petrescue</a><a href="/tags/读书笔记" class="btn btn-info btn-xs">读书笔记</a><a href="/tags/eopl" class="btn btn-info btn-xs">eopl</a><a href="/tags/CAS" class="btn btn-info btn-xs">CAS</a><a href="/tags/无锁" class="btn btn-info btn-xs">无锁</a><a href="/tags/数据结构" class="btn btn-info btn-xs">数据结构</a><a href="/tags/FP" class="btn btn-info btn-xs">FP</a><a href="/tags/多值返回" class="btn btn-info btn-xs">多值返回</a><a href="/tags/lambda" class="btn btn-info btn-xs">lambda</a><a href="/tags/AssetManager" class="btn btn-info btn-xs">AssetManager</a><a href="/tags/libgdx" class="btn btn-info btn-xs">libgdx</a><a href="/tags/pprof" class="btn btn-info btn-xs">pprof</a><a href="/tags/微博数据分析" class="btn btn-info btn-xs">微博数据分析</a><a href="/tags/cdn" class="btn btn-info btn-xs">cdn</a><a href="/tags/云风" class="btn btn-info btn-xs">云风</a><a href="/tags/hive" class="btn btn-info btn-xs">hive</a><a href="/tags/调度器" class="btn btn-info btn-xs">调度器</a><a href="/tags/flash" class="btn btn-info btn-xs">flash</a><a href="/tags/planeshift" class="btn btn-info btn-xs">planeshift</a><a href="/tags/分段栈" class="btn btn-info btn-xs">分段栈</a><a href="/tags/terminal" class="btn btn-info btn-xs">terminal</a><a href="/tags/godit" class="btn btn-info btn-xs">godit</a><a href="/tags/转载" class="btn btn-info btn-xs">转载</a><a href="/tags/OpenGL" class="btn btn-info btn-xs">OpenGL</a><a href="/tags/年终总结" class="btn btn-info btn-xs">年终总结</a><a href="/tags/翻译" class="btn btn-info btn-xs">翻译</a><a href="/tags/facebook" class="btn btn-info btn-xs">facebook</a><a href="/tags/编程感悟" class="btn btn-info btn-xs">编程感悟</a><a href="/tags/架构" class="btn btn-info btn-xs">架构</a><a href="/tags/C" class="btn btn-info btn-xs">C</a><a href="/tags/CSP" class="btn btn-info btn-xs">CSP</a><a href="/tags/acme" class="btn btn-info btn-xs">acme</a><a href="/tags/编辑器" class="btn btn-info btn-xs">编辑器</a><a href="/tags/devdraw" class="btn btn-info btn-xs">devdraw</a><a href="/tags/mmorpg" class="btn btn-info btn-xs">mmorpg</a><a href="/tags/ouster" class="btn btn-info btn-xs">ouster</a><a href="/tags/一致性" class="btn btn-info btn-xs">一致性</a><a href="/tags/翻墙" class="btn btn-info btn-xs">翻墙</a><a href="/tags/n6bagent" class="btn btn-info btn-xs">n6bagent</a><a href="/tags/性能优化" class="btn btn-info btn-xs">性能优化</a><a href="/tags/继承" class="btn btn-info btn-xs">继承</a><a href="/tags/接口" class="btn btn-info btn-xs">接口</a><a href="/tags/DSP" class="btn btn-info btn-xs">DSP</a><a href="/tags/aerospike" class="btn btn-info btn-xs">aerospike</a><a href="/tags/kv" class="btn btn-info btn-xs">kv</a><a href="/tags/ssd" class="btn btn-info btn-xs">ssd</a><a href="/tags/raft" class="btn btn-info btn-xs">raft</a><a href="/tags/overcommit" class="btn btn-info btn-xs">overcommit</a><a href="/tags/nosql" class="btn btn-info btn-xs">nosql</a><a href="/tags/coroutine" class="btn btn-info btn-xs">coroutine</a><a href="/tags/plan9" class="btn btn-info btn-xs">plan9</a><a href="/tags/grt" class="btn btn-info btn-xs">grt</a><a href="/tags/database" class="btn btn-info btn-xs">database</a><a href="/tags/垃圾回收" class="btn btn-info btn-xs">垃圾回收</a><a href="/tags/lambda演算" class="btn btn-info btn-xs">lambda演算</a><a href="/tags/网络编程" class="btn btn-info btn-xs">网络编程</a><a href="/tags/epoll" class="btn btn-info btn-xs">epoll</a><a href="/tags/select" class="btn btn-info btn-xs">select</a><a href="/tags/io模型" class="btn btn-info btn-xs">io模型</a><a href="/tags/阻塞" class="btn btn-info btn-xs">阻塞</a><a href="/tags/同步" class="btn btn-info btn-xs">同步</a><a href="/tags/dynomite" class="btn btn-info btn-xs">dynomite</a><a href="/tags/session" class="btn btn-info btn-xs">session</a><a href="/tags/beego" class="btn btn-info btn-xs">beego</a><a href="/tags/codis" class="btn btn-info btn-xs">codis</a><a href="/tags/ycombinator" class="btn btn-info btn-xs">ycombinator</a><a href="/tags/热重启" class="btn btn-info btn-xs">热重启</a><a href="/tags/跳表" class="btn btn-info btn-xs">跳表</a><a href="/tags/skiplist" class="btn btn-info btn-xs">skiplist</a><a href="/tags/监控" class="btn btn-info btn-xs">监控</a><a href="/tags/zipkin" class="btn btn-info btn-xs">zipkin</a><a href="/tags/influxdb" class="btn btn-info btn-xs">influxdb</a><a href="/tags/heka" class="btn btn-info btn-xs">heka</a><a href="/tags/分布式跟踪" class="btn btn-info btn-xs">分布式跟踪</a><a href="/tags/bug" class="btn btn-info btn-xs">bug</a><a href="/tags/gorilla" class="btn btn-info btn-xs">gorilla</a><a href="/tags/middleware" class="btn btn-info btn-xs">middleware</a><a href="/tags/http" class="btn btn-info btn-xs">http</a><a href="/tags/object" class="btn btn-info btn-xs">object</a><a href="/tags/closure" class="btn btn-info btn-xs">closure</a><a href="/tags/nanopass" class="btn btn-info btn-xs">nanopass</a><a href="/tags/位运算" class="btn btn-info btn-xs">位运算</a><a href="/tags/swapcontext" class="btn btn-info btn-xs">swapcontext</a><a href="/tags/汇编" class="btn btn-info btn-xs">汇编</a><a href="/tags/trampoline" class="btn btn-info btn-xs">trampoline</a><a href="/tags/cps" class="btn btn-info btn-xs">cps</a><a href="/tags/continuation" class="btn btn-info btn-xs">continuation</a><a href="/tags/callback" class="btn btn-info btn-xs">callback</a><a href="/tags/closure-convert" class="btn btn-info btn-xs">closure-convert</a><a href="/tags/redis" class="btn btn-info btn-xs">redis</a><a href="/tags/逻辑时钟" class="btn btn-info btn-xs">逻辑时钟</a><a href="/tags/logical clock" class="btn btn-info btn-xs">logical clock</a><a href="/tags/服务发现" class="btn btn-info btn-xs">服务发现</a><a href="/tags/配置中心" class="btn btn-info btn-xs">配置中心</a><a href="/tags/chicken" class="btn btn-info btn-xs">chicken</a><a href="/tags/调试" class="btn btn-info btn-xs">调试</a><a href="/tags/VM" class="btn btn-info btn-xs">VM</a><a href="/tags/srfi-18" class="btn btn-info btn-xs">srfi-18</a><a href="/tags/call/cc" class="btn btn-info btn-xs">call/cc</a><a href="/tags/p2p" class="btn btn-info btn-xs">p2p</a><a href="/tags/delivery" class="btn btn-info btn-xs">delivery</a><a href="/tags/动态规划" class="btn btn-info btn-xs">动态规划</a><a href="/tags/网络" class="btn btn-info btn-xs">网络</a><a href="/tags/lua" class="btn btn-info btn-xs">lua</a><a href="/tags/sql" class="btn btn-info btn-xs">sql</a><a href="/tags/cockroachdb" class="btn btn-info btn-xs">cockroachdb</a><a href="/tags/isolation" class="btn btn-info btn-xs">isolation</a><a href="/tags/snapshot" class="btn btn-info btn-xs">snapshot</a><a href="/tags/serializable" class="btn btn-info btn-xs">serializable</a><a href="/tags/链表" class="btn btn-info btn-xs">链表</a><a href="/tags/ltask" class="btn btn-info btn-xs">ltask</a><a href="/tags/channel" class="btn btn-info btn-xs">channel</a><a href="/tags/leetcode" class="btn btn-info btn-xs">leetcode</a><a href="/tags/Rust" class="btn btn-info btn-xs">Rust</a><a href="/tags/socket" class="btn btn-info btn-xs">socket</a><a href="/tags/interpret" class="btn btn-info btn-xs">interpret</a><a href="/tags/可串行化" class="btn btn-info btn-xs">可串行化</a><a href="/tags/spanner" class="btn btn-info btn-xs">spanner</a><a href="/tags/分布式" class="btn btn-info btn-xs">分布式</a><a href="/tags/transaction" class="btn btn-info btn-xs">transaction</a><a href="/tags/SQL" class="btn btn-info btn-xs">SQL</a><a href="/tags/parser" class="btn btn-info btn-xs">parser</a><a href="/tags/内存池" class="btn btn-info btn-xs">内存池</a><a href="/tags/allocator" class="btn btn-info btn-xs">allocator</a><a href="/tags/combinator" class="btn btn-info btn-xs">combinator</a><a href="/tags/monad" class="btn btn-info btn-xs">monad</a><a href="/tags/ocaml" class="btn btn-info btn-xs">ocaml</a><a href="/tags/abstract machine" class="btn btn-info btn-xs">abstract machine</a><a href="/tags/ZINC" class="btn btn-info btn-xs">ZINC</a><a href="/tags/currying" class="btn btn-info btn-xs">currying</a><a href="/tags/type infer" class="btn btn-info btn-xs">type infer</a><a href="/tags/HM" class="btn btn-info btn-xs">HM</a><a href="/tags/类型系统" class="btn btn-info btn-xs">类型系统</a><a href="/tags/leak" class="btn btn-info btn-xs">leak</a><a href="/tags/reset" class="btn btn-info btn-xs">reset</a><a href="/tags/shift" class="btn btn-info btn-xs">shift</a><a href="/tags/delimited" class="btn btn-info btn-xs">delimited</a><a href="/tags/dectect" class="btn btn-info btn-xs">dectect</a><a href="/tags/race" class="btn btn-info btn-xs">race</a><a href="/tags/schema" class="btn btn-info btn-xs">schema</a><a href="/tags/hybrid logical clock" class="btn btn-info btn-xs">hybrid logical clock</a><a href="/tags/memory" class="btn btn-info btn-xs">memory</a><a href="/tags/TiDB" class="btn btn-info btn-xs">TiDB</a><a href="/tags/pattern match" class="btn btn-info btn-xs">pattern match</a><a href="/tags/shen" class="btn btn-info btn-xs">shen</a><a href="/tags/context" class="btn btn-info btn-xs">context</a><a href="/tags/缤果盒子" class="btn btn-info btn-xs">缤果盒子</a><a href="/tags/variant" class="btn btn-info btn-xs">variant</a><a href="/tags/pool" class="btn btn-info btn-xs">pool</a><a href="/tags/goroutine" class="btn btn-info btn-xs">goroutine</a><a href="/tags/morestack" class="btn btn-info btn-xs">morestack</a><a href="/tags/RC" class="btn btn-info btn-xs">RC</a><a href="/tags/SI" class="btn btn-info btn-xs">SI</a><a href="/tags/opentracing" class="btn btn-info btn-xs">opentracing</a><a href="/tags/klambda" class="btn btn-info btn-xs">klambda</a><a href="/tags/优化" class="btn btn-info btn-xs">优化</a><a href="/tags/Cello" class="btn btn-info btn-xs">Cello</a><a href="/tags/fat pointer" class="btn btn-info btn-xs">fat pointer</a><a href="/tags/eval" class="btn btn-info btn-xs">eval</a><a href="/tags/ddl" class="btn btn-info btn-xs">ddl</a><a href="/tags/codegen" class="btn btn-info btn-xs">codegen</a><a href="/tags/expression" class="btn btn-info btn-xs">expression</a><a href="/tags/erlang" class="btn btn-info btn-xs">erlang</a><a href="/tags/withcancel" class="btn btn-info btn-xs">withcancel</a><a href="/tags/constant propagate" class="btn btn-info btn-xs">constant propagate</a><a href="/tags/KISS" class="btn btn-info btn-xs">KISS</a><a href="/tags/性能" class="btn btn-info btn-xs">性能</a><a href="/tags/macro" class="btn btn-info btn-xs">macro</a><a href="/tags/hygiene" class="btn btn-info btn-xs">hygiene</a><a href="/tags/er-macro-transform" class="btn btn-info btn-xs">er-macro-transform</a><a href="/tags/cora" class="btn btn-info btn-xs">cora</a><a href="/tags/module" class="btn btn-info btn-xs">module</a><a href="/tags/错误处理" class="btn btn-info btn-xs">错误处理</a><a href="/tags/contract" class="btn btn-info btn-xs">contract</a><a href="/tags/union store" class="btn btn-info btn-xs">union store</a><a href="/tags/calvin" class="btn btn-info btn-xs">calvin</a><a href="/tags/bytecode" class="btn btn-info btn-xs">bytecode</a><a href="/tags/JVM" class="btn btn-info btn-xs">JVM</a><a href="/tags/aurora" class="btn btn-info btn-xs">aurora</a><a href="/tags/tidb" class="btn btn-info btn-xs">tidb</a><a href="/tags/vm" class="btn btn-info btn-xs">vm</a><a href="/tags/executor" class="btn btn-info btn-xs">executor</a><a href="/tags/covariance" class="btn btn-info btn-xs">covariance</a><a href="/tags/GC" class="btn btn-info btn-xs">GC</a><a href="/tags/oberon" class="btn btn-info btn-xs">oberon</a><a href="/tags/sysbench" class="btn btn-info btn-xs">sysbench</a><a href="/tags/effect" class="btn btn-info btn-xs">effect</a><a href="/tags/await" class="btn btn-info btn-xs">await</a><a href="/tags/async" class="btn btn-info btn-xs">async</a><a href="/tags/promise" class="btn btn-info btn-xs">promise</a><a href="/tags/interface" class="btn btn-info btn-xs">interface</a><a href="/tags/privilege" class="btn btn-info btn-xs">privilege</a><a href="/tags/test" class="btn btn-info btn-xs">test</a><a href="/tags/inferno" class="btn btn-info btn-xs">inferno</a><a href="/tags/microKanren" class="btn btn-info btn-xs">microKanren</a><a href="/tags/miniKanren" class="btn btn-info btn-xs">miniKanren</a><a href="/tags/zenlife" class="btn btn-info btn-xs">zenlife</a><a href="/tags/domain" class="btn btn-info btn-xs">domain</a><a href="/tags/HLC" class="btn btn-info btn-xs">HLC</a><a href="/tags/distributed" class="btn btn-info btn-xs">distributed</a><a href="/tags/deadlock" class="btn btn-info btn-xs">deadlock</a><a href="/tags/encrypt" class="btn btn-info btn-xs">encrypt</a><a href="/tags/authentication" class="btn btn-info btn-xs">authentication</a><a href="/tags/binlog" class="btn btn-info btn-xs">binlog</a><a href="/tags/probability" class="btn btn-info btn-xs">probability</a><a href="/tags/hotspot" class="btn btn-info btn-xs">hotspot</a><a href="/tags/makefile" class="btn btn-info btn-xs">makefile</a><a href="/tags/cache" class="btn btn-info btn-xs">cache</a><a href="/tags/ffi" class="btn btn-info btn-xs">ffi</a><a href="/tags/itx" class="btn btn-info btn-xs">itx</a><a href="/tags/prepare" class="btn btn-info btn-xs">prepare</a><a href="/tags/code review" class="btn btn-info btn-xs">code review</a><a href="/tags/darkeden" class="btn btn-info btn-xs">darkeden</a><a href="/tags/dependent" class="btn btn-info btn-xs">dependent</a><a href="/tags/type" class="btn btn-info btn-xs">type</a><a href="/tags/koka" class="btn btn-info btn-xs">koka</a><a href="/tags/引用计数" class="btn btn-info btn-xs">引用计数</a><a href="/tags/algebraic effect" class="btn btn-info btn-xs">algebraic effect</a><a href="/tags/RWMutex" class="btn btn-info btn-xs">RWMutex</a><a href="/tags/软件工程" class="btn btn-info btn-xs">软件工程</a><a href="/tags/开发环境" class="btn btn-info btn-xs">开发环境</a><a href="/tags/code generation" class="btn btn-info btn-xs">code generation</a><a href="/tags/CI" class="btn btn-info btn-xs">CI</a><a href="/tags/regex" class="btn btn-info btn-xs">regex</a><a href="/tags/PEG" class="btn btn-info btn-xs">PEG</a><a href="/tags/architecture" class="btn btn-info btn-xs">architecture</a><a href="/tags/cloud native" class="btn btn-info btn-xs">cloud native</a><a href="/tags/gambit" class="btn btn-info btn-xs">gambit</a><a href="/tags/ebpf" class="btn btn-info btn-xs">ebpf</a><a href="/tags/bpftrace" class="btn btn-info btn-xs">bpftrace</a><a href="/tags/流控" class="btn btn-info btn-xs">流控</a><a href="/tags/oom" class="btn btn-info btn-xs">oom</a><a href="/tags/severless" class="btn btn-info btn-xs">severless</a><a href="/tags/coprocessor" class="btn btn-info btn-xs">coprocessor</a><a href="/tags/treadmill" class="btn btn-info btn-xs">treadmill</a><a href="/tags/MVCC" class="btn btn-info btn-xs">MVCC</a><a href="/tags/hole digging" class="btn btn-info btn-xs">hole digging</a><a href="/tags/NAT" class="btn btn-info btn-xs">NAT</a><a href="/tags/reverse proxying" class="btn btn-info btn-xs">reverse proxying</a><a href="/tags/tunnel" class="btn btn-info btn-xs">tunnel</a><a href="/tags/累积分布函数" class="btn btn-info btn-xs">累积分布函数</a><a href="/tags/eCDF" class="btn btn-info btn-xs">eCDF</a><a href="/tags/SEDA" class="btn btn-info btn-xs">SEDA</a><a href="/tags/top-of-stack-caching" class="btn btn-info btn-xs">top-of-stack-caching</a><a href="/tags/exception" class="btn btn-info btn-xs">exception</a><a href="/tags/resumable" class="btn btn-info btn-xs">resumable</a><a href="/tags/string" class="btn btn-info btn-xs">string</a><a href="/tags/ActivityPub" class="btn btn-info btn-xs">ActivityPub</a><a href="/tags/mastodon" class="btn btn-info btn-xs">mastodon</a><a href="/tags/schedule" class="btn btn-info btn-xs">schedule</a><a href="/tags/concurrent" class="btn btn-info btn-xs">concurrent</a><a href="/tags/lru" class="btn btn-info btn-xs">lru</a><a href="/tags/scale" class="btn btn-info btn-xs">scale</a><a href="/tags/recursive" class="btn btn-info btn-xs">recursive</a><a href="/tags/patch" class="btn btn-info btn-xs">patch</a><a href="/tags/go" class="btn btn-info btn-xs">go</a><a href="/tags/bazel" class="btn btn-info btn-xs">bazel</a><a href="/tags/union scan" class="btn btn-info btn-xs">union scan</a><a href="/tags/technical debt" class="btn btn-info btn-xs">technical debt</a><a href="/tags/library" class="btn btn-info btn-xs">library</a><a href="/tags/framework" class="btn btn-info btn-xs">framework</a><a href="/tags/queueing delay" class="btn btn-info btn-xs">queueing delay</a><a href="/tags/queueing theory" class="btn btn-info btn-xs">queueing theory</a><a href="/tags/queueing" class="btn btn-info btn-xs">queueing</a><a href="/tags/threaded-code" class="btn btn-info btn-xs">threaded-code</a><a href="/tags/jit" class="btn btn-info btn-xs">jit</a><a href="/tags/copy-and-patch" class="btn btn-info btn-xs">copy-and-patch</a><a href="/tags/fips" class="btn btn-info btn-xs">fips</a><a href="/tags/delimited-continuation" class="btn btn-info btn-xs">delimited-continuation</a><a href="/tags/tailfication" class="btn btn-info btn-xs">tailfication</a><a href="/tags/clean code" class="btn btn-info btn-xs">clean code</a><a href="/tags/design" class="btn btn-info btn-xs">design</a><a href="/tags/AI" class="btn btn-info btn-xs">AI</a><a href="/tags/软件事务内存" class="btn btn-info btn-xs">软件事务内存</a><a href="/tags/STM" class="btn btn-info btn-xs">STM</a><a href="/tags/debugger" class="btn btn-info btn-xs">debugger</a><a href="/tags/namebase" class="btn btn-info btn-xs">namebase</a><a href="/tags/r7rs" class="btn btn-info btn-xs">r7rs</a><a href="/tags/namespace" class="btn btn-info btn-xs">namespace</a><a href="/tags/package" class="btn btn-info btn-xs">package</a><a href="/tags/mark-sweep" class="btn btn-info btn-xs">mark-sweep</a><a href="/tags/mostly-copying" class="btn btn-info btn-xs">mostly-copying</a><a href="/tags/tailcall" class="btn btn-info btn-xs">tailcall</a><a href="/tags/cml" class="btn btn-info btn-xs">cml</a><a href="/tags/type checker" class="btn btn-info btn-xs">type checker</a><a href="/tags/gc" class="btn btn-info btn-xs">gc</a><a href="/tags/am40" class="btn btn-info btn-xs">am40</a><a href="/tags/旁路由" class="btn btn-info btn-xs">旁路由</a><a href="/tags/nas" class="btn btn-info btn-xs">nas</a><a href="/tags/tracing" class="btn btn-info btn-xs">tracing</a><a href="/tags/multicore" class="btn btn-info btn-xs">multicore</a><a href="/tags/concurrency" class="btn btn-info btn-xs">concurrency</a><a href="/tags/rust" class="btn btn-info btn-xs">rust</a><a href="/tags/cranelift" class="btn btn-info btn-xs">cranelift</a><a href="/tags/c" class="btn btn-info btn-xs">c</a><a href="/tags/ad" class="btn btn-info btn-xs">ad</a></div></div></div></div><hr /><footer><p class="nav navbar-nav navbar-right">Powered by <a href="https://clojure.org/">Clojure</a> &amp; <a href="//getbootstrap.com/">Bootstrap</a></p></footer></body></html>
