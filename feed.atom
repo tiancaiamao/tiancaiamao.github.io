@@ -1,2 +1,471 @@
 <?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom"><title>Arthur 的博客</title><subtitle>伟大的野心家，实践家</subtitle><updated>2026-09-25T22:22:42Z</updated><link rel="alternate" type="text/html" href="https://tiancaiamao.github.io/" /><link rel="self" type="application/atom+xml" href="https://tiancaiamao.github.io/feed.atom" /><rights>Copyright (c) 2025, Arthur Mao</rights><id>https://tiancaiamao.github.io/</id><author><name>Arthur</name><email>tiancaiamao@gmail.com</email></author><entry><title>tinyactor 是如何处理 GC 与 C API 交互的</title><link href="https://tiancaiamao.github.io/tinyactor-gc.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tinyactor-gc.md</id><updated>2026-09-25T22:22:42Z</updated><content type="html"></content></entry><entry><title>本地 AI 体验</title><link href="https://tiancaiamao.github.io/7900xtx-local-ai.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/7900xtx-local-ai.md</id><updated>2026-08-16T09:42:42Z</updated><content type="html"></content></entry><entry><title>最近两个 AI 没搞定的 case 分析</title><link href="https://tiancaiamao.github.io/two-ai-failure-case-analysis.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/two-ai-failure-case-analysis.md</id><updated>2026-07-21T18:16:42Z</updated><content type="html"></content></entry><entry><title>使用 ai 编程大半年后的心态变化</title><link href="https://tiancaiamao.github.io/mindset-change-after-ai-for-half-year.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/mindset-change-after-ai-for-half-year.md</id><updated>2026-06-26T22:18:42Z</updated><content type="html"></content></entry><entry><title>两节点高可用强一致 -- raft 2F1A</title><link href="https://tiancaiamao.github.io/raft-2F1A.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/raft-2F1A.md</id><updated>2026-06-25T20:56:42Z</updated><content type="html"></content></entry><entry><title>让 AI vibe 了一个 actor 模型的语言</title><link href="https://tiancaiamao.github.io/tiny-actor.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tiny-actor.md</id><updated>2026-06-21T17:51:42Z</updated><content type="html"></content></entry><entry><title>重构 agent 的上下文管理</title><link href="https://tiancaiamao.github.io/ai-agent-context-management.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/ai-agent-context-management.md</id><updated>2026-06-17T17:20:42Z</updated><content type="html"></content></entry><entry><title>TiDB code RAG</title><link href="https://tiancaiamao.github.io/tidb-code-rag.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tidb-code-rag.md</id><updated>2026-06-03T19:49:42Z</updated><content type="html"></content></entry><entry><title>long run harness 探索</title><link href="https://tiancaiamao.github.io/long-run-harness.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/long-run-harness.md</id><updated>2026-05-25T12:17:42Z</updated><content type="html"></content></entry><entry><title>deepseek 使用初印象</title><link href="https://tiancaiamao.github.io/deepseek-first-impression.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/deepseek-first-impression.md</id><updated>2026-05-12T09:56:42Z</updated><content type="html"></content></entry></feed>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Arthur 的博客</title><subtitle>伟大的野心家，实践家</subtitle><updated>2026-09-25T22:22:42Z</updated><link rel="alternate" type="text/html" href="https://tiancaiamao.github.io/" /><link rel="self" type="application/atom+xml" href="https://tiancaiamao.github.io/feed.atom" /><rights>Copyright (c) 2025, Arthur Mao</rights><id>https://tiancaiamao.github.io/</id><author><name>Arthur</name><email>tiancaiamao@gmail.com</email></author><entry><title>tinyactor 是如何处理 GC 与 C API 交互的</title><link href="https://tiancaiamao.github.io/tinyactor-gc.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tinyactor-gc.md</id><updated>2026-09-25T22:22:42Z</updated><content type="html">&lt;p&gt;之前写过一篇&lt;a href=&quot;/tiny-actor.md&quot;&gt;tiny-actor&lt;/a&gt;，一个参考 Erlang/Gleam 的小的 actor 语言。
+最近为了它的 GC 和 C 模块交互的设计，前前后后跟 AI 讨论了很多轮，最后收敛到一个我自己觉得相当漂亮的设计。
+感觉值得记录一下。&lt;/p&gt;&lt;h2&gt;背景&lt;/h2&gt;&lt;p&gt;tinyactor 是 per-process 堆 + 半区复制 GC。每个 actor 一个自己的小堆，GC 时把存活对象拷到另一半。&lt;/p&gt;&lt;p&gt;这里多解释两句。VM 里所有的值都分配在 VM 自己管理的内存上，下文叫它托管内存，由 GC 负责回收。GC 的工作方式是，从一些起始位置出发，能摸到的对象当作活的，摸不到的回收——这些起始位置就是 GC root。
+半区复制是把堆分成两半，分配只在其中一半进行，GC 的时候把存活对象拷到另一半，然后两半对调。堆就这么大，一边满了，另一半就是全部的余量，上限就是 2 倍。满了只能 GC，没有&amp;quot;再找操作系统要一点&amp;quot;的选项，这个点后面还会用到。&lt;/p&gt;&lt;p&gt;C 模块（net/file/str 这些）通过一个统一的入口进 VM。在 C 和托管内存怎么交互这件事上，要把设计做对了很难。&lt;/p&gt;&lt;p&gt;先举例子，假设一个 C 模块：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;Val a = gcAlloc()   (1)
+Val b = gcAlloc()   (2)
+// use a           (3) 已经是悬挂引用了
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;在第 (2) 步中，如果分配 b 的过程中触发了 GC，a 是属于 C 栈上的指针，C 语言栈并不属于 GC root，
+于是没有从 GC root 到 a 引用对象的可达路径，于是 a 指向的那块托管内存，会被 GC 回收掉。a 成了一个悬挂引用。
+到第 (3) 步，再使用 a 就会出问题了。&lt;/p&gt;&lt;h2&gt;其它语言是如何处理的&lt;/h2&gt;&lt;p&gt;有些脚本语言虚拟机，提供了一些 API，要求写 C 扩展的人先声明要用到的变量。
+大概相当于，弄一个临时的 root 区域，把 a 和 b 都放到这个 root 上面，以保护它在被使用期间，不被 GC 掉。&lt;/p&gt;&lt;p&gt;写 C 模块的时候，都得知道有这样的坑，
+比如说 chibi scheme 里面，它就会提供这样的 API:&lt;/p&gt;&lt;pre&gt;&lt;code&gt;  sexp_gc_var2(a, b);   (1)
+  sexp_gc_preserve2(ctx, a, b);  (2)
+  ...
+  sexp_gc_release2(ctx);   (3)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;第 (1) 步先声明，其实就相当于在宿主语言那边开辟临时 root 区，C 模块里面的两个变量会需要放过去。
+第 (2) 步再给它保护起来，a 和 b 现在都是 GC root 可达的了，不会被 GC，所以再使用就安全了。
+第 (3) 步，是最后使用结束，需要再把 a 和 b 从 GC root 中清理掉。&lt;/p&gt;&lt;p&gt;问题是这样子，特别不友好。心智负担太重了，比 malloc 需要 free 都有过之而无不及。&lt;/p&gt;&lt;p&gt;因为它还不仅仅涉及，要声明和释放，还有另外的问题。
+比如说，我在 C 里面写一个东西&lt;/p&gt;&lt;pre&gt;&lt;code&gt;struct My {
+    Val x;
+};
+
+// a 是 VM 里面的对象传过来的
+
+struct My my;
+my.x = a;          (1)
+Val b = gcAlloc()  (2)
+// use my          (3)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;my 是我在 C 语言里面定义的结构体，它引用托管内存上的对象，但是这种情况又是不受 GC root 保护的。
+就有可能第 (2) 步里，分配 b 的时候，触发了 GC，于是 a 被回收掉了，这里 my.x 这个引用又挂掉了。&lt;/p&gt;&lt;p&gt;所以 C 栈就不能引用虚拟机托管内存里面的对象。给用户（而不是 GC 实现者）来解释这些规则，是很难解释的。
+心智负担实在太重了...即使作者自己也没法保证永远不犯错。&lt;/p&gt;&lt;p&gt;JavaScript 的 V8 也是没有跳出这套路子，它在两个方面让犯错不那么容易。
+一个是用 RAII 来保证释放：不用像 chibi 那样显式 release，只要声明一个 scope 对象，出了作用域，这个范围内拿到的 handle 自动全部释放。
+另一个是，规则约束，只能拿到 VM 里面对象的引用，解引用都是在确定的作用域里面的。&lt;/p&gt;&lt;p&gt;比如&lt;/p&gt;&lt;pre&gt;&lt;code&gt;&lt;class&gt;language-cpp&lt;/class&gt;&lt;@&gt;&lt;/@&gt;void Foo(const FunctionCallbackInfo&amp;lt;Value&amp;gt;&amp;amp; args) {
+  Isolate* isolate = args.GetIsolate();
+  HandleScope scope(isolate);   // RAII，出了这个作用域，里面拿到的 handle 全部失效
+
+  Local&amp;lt;String&amp;gt; s = String::NewFromUtf8Literal(isolate, &amp;quot;hello&amp;quot;);
+  // s 不是对象的直接指针，只是一个 handle
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;Local、Handle 都是受 HandleScope 统一管理的间接句柄，scope 一走，全部作废。&lt;/p&gt;&lt;p&gt;安全性上面有一些加强吧，但是我不觉得这是一个优雅的方案。
+尤其是 tinyactor 是 C 语言写的，不像 v8 是 C++，不太好用上这些安全上的处理机制。&lt;/p&gt;&lt;h2&gt;Lua 是极少数把这件事情做对的语言&lt;/h2&gt;&lt;p&gt;lua 是极少数把这件事情做对的语言，这个观点我提过好多次了。&lt;/p&gt;&lt;p&gt;它用的栈交互协议，根本就不让 C 栈可以直接持有到托管内存中的对象。
+它的交互的 API 大概就是 push / pop / dup / swap 这些。通过 C 写扩展的人，就是间接地操作栈上的对象，通过这样的栈交互 API。&lt;/p&gt;&lt;p&gt;C 里面完全拿不到 Lua 对象的指针，全部走间接的引用。
+一个 lua 的 C 扩展长这样：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;&lt;class&gt;language-c&lt;/class&gt;&lt;@&gt;&lt;/@&gt;static int l_first(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);    // 从栈上取第一个参数，它是个 table
+    lua_pushinteger(L, 1);               // 把索引 1 压到栈上
+    lua_gettable(L, 1);                  // 取 table[1]，结果压到栈顶
+    return 1;                            // 告诉 Lua 返回值就在栈顶
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;全程没有一个 Lua 对象的指针出现在 C 里面，操作的都是栈上的索引。&lt;/p&gt;&lt;p&gt;那 tinyactor 为什么不直接学 lua 呢？
+因为学 lua 就意味着，所有 C 扩展都要用这套 push/pop 的 API 重写一遍，写扩展的人操作的全是间接的栈，啰嗦。我想要的还是自然的 C 函数签名，模块代码像普通 C 代码一样写。&lt;/p&gt;&lt;h2&gt;tinyactor 是怎么做的&lt;/h2&gt;&lt;p&gt;既要自然的 C 函数签名，又不能有 GC 的心智负担，怎么办？
+一开始我偷懒，走的还是第二节批判的那条路：类似 chibi scheme 那种，临时追加 root 来保护 C 的对象。结果果然踩坑，不少 bug 都跟这里的心智负担过高相关，而 GC 的 bug 又不好调。&lt;/p&gt;&lt;p&gt;在我做 cora 语言的时候，其实想过好几个版本的思路。&lt;/p&gt;&lt;p&gt;其中一个版本的做法是，cora 反正是编译到 C 的嘛，所以 C 的栈也可以当作 GC root——GC 回收的时候，把 C 栈的内存也扫一遍，看起来引用着托管对象的，就当作是活的。
+这样 C 代码里面就不需要任何保护变量的 API 了。&lt;/p&gt;&lt;p&gt;那我能不能把这个思路借鉴到 tinyactor 这边呢？
+进入 C 模块之前，记录下 C 栈的位置，等到了 gcAlloc 里面，再记录下 gcAlloc 的栈位置，把两次之间的这段栈内存区域，作为 GC root 来处理。&lt;/p&gt;&lt;p&gt;这个想法是有坑的。
+问题出在 tinyactor 里面我做的是 moving GC，就是前面说的半区复制，对象会被搬动：A 指向 B，B 被搬走了，就需要更新 A，让它指向 B 的新位置。
+而扫 C 栈这种做法，用的是非精确 GC（conservative）——扫描的时候拿到一个个机器字，猜它是不是指针。
+它没办法严格区分，这个值真的是一个指向托管内存的指针，还是恰好长得像指针的大整数。
+假如它只是一个大整数，B 搬家之后，GC 还是会把这个&amp;quot;指针&amp;quot;更新成新地址——一个无辜的 C 栈变量就被改坏了。
+所以这条思路走不通过。&lt;/p&gt;&lt;p&gt;另一个版本，也是 cora 那边最终的做法，是让 gcAlloc 的时候不触发 GC，只标记一下&amp;quot;需要 GC&amp;quot;，真正的 GC 挪到别处执行。这样 C 模块写起来就没什么心智负担。
+cora 编译的时候做了 cps 变换，把代码切成一个个小片段，运行就发生在一个叫 trampoline 的大循环里面：不停地取下一段代码来执行。因为每段都很短，很快就会回到这个循环，在这里检查 GC 标记，有就执行 GC。
+很关键的一个点，回到 trampoline 的时候，一定是从 C 模块退出来之后，此刻 C 的栈不增长，没有新的 C 栈对象需要保护。程序里所有对象的状态对 GC 都清晰可见、可以安全停下来做 GC 的位置，就叫 safepoint。这里正好就是一个 safepoint。&lt;/p&gt;&lt;p&gt;这个想法在 tinyactor 这边也不可行。
+gcAlloc 只标记不干活的话，堆很快就分配满了，后续的分配没有地方放。cora 那边是全局托管的 GC，内存从一个大池子里分配，池子满了就找操作系统再要一点，问题不大。
+但是 tinyactor 这边是 per-process 堆，满了就必须触发 GC，而此刻正在 C 模块里面，既没有空间分配，又不能扩容。堆满了，就只能死，只能 panic。&lt;/p&gt;&lt;p&gt;那就顺着这个思路再往下想一步：既然 safepoint 这条路卡在&amp;quot;堆满必须 GC&amp;quot;，那让 C 执行期间干脆不碰托管内存呢？
+进入 C 模块之后，C 里面的分配走一块独立的区域，等到退出的时候，把返回值深拷贝回托管内存。
+这样写 C 模块的人，就完全不用操心 GC 的事情了。&lt;/p&gt;&lt;p&gt;方向大概是这样。但是这块&amp;quot;独立的区域&amp;quot;是什么，从哪里来，会不会被搬家，都还是问题。&lt;/p&gt;&lt;h2&gt;最终方案&lt;/h2&gt;&lt;p&gt;落地的时候，我重新看了一眼那句&amp;quot;堆满了，就只能死&amp;quot;。
+这句话里藏着一个没有被质疑的假设——堆满了，除了 GC 就没有别的出路了吗？&lt;/p&gt;&lt;p&gt;有。malloc 又没有&amp;quot;满&amp;quot;这回事。而且上一节剩下的三个问题——独立区域是什么、从哪里来、会不会搬家——答案也都在这个词里面。&lt;/p&gt;&lt;p&gt;于是有了最终的方案。进入 C 模块的时候，给一小块初始区域用于分配；这块区域很小，大多数调用根本用不完它。超了之后，后续的分配就落到 malloc 的 chunk 上面，chunk 之间链起来。bump 分配——分配只是移动一下指针——chunk 一旦分出来，终身不搬家。
+传进来的参数不用动，托管内存冻结着，地址本来就是稳定的。C 里面新建的值落在初始区域和 chunk 上面，地址也是稳定的。
+退出的时候，把返回值深拷贝回托管内存——此刻 GC 也好，堆不够了扩容也好，都随意了——然后初始区域连同整条 chunk 链，一并释放。&lt;/p&gt;&lt;p&gt;用伪代码把一次调用串起来：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;C_foo(args) {
+    // 进入：初始区域就绪，chunk 链为空
+    a = args[0]       // 指向托管内存的对象，冻结，稳定
+    b = gcAlloc()     // 不会触发 GC：先落初始区域，超了落 chunk，都是稳定地址
+    ...
+    // 退出：返回值深拷回托管内存，整条 chunk 链 free
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;最妙的是安全性。C 执行期间，托管内存是冻结的，零分配——新东西全在初始区域和 chunk 上，而这些都是 malloc 出来的，终身不搬家。
+托管内存是冻结的旧世界，chunk 是全新的世界。而且 tinyactor 是纯函数语言，值都是不可变的，C 模块没有&amp;quot;修改一个已有对象&amp;quot;的操作，托管这边天然不会产生指向 chunk 的引用。
+整链 free 的时候，不可能有活着的指针还指在上面。泄漏和悬垂，都被结构挡住了，根本不需要逐对象去追踪。&lt;/p&gt;&lt;p&gt;写 C 模块的人心智负担是零，没有什么限制。
+退出时深拷贝的成本也可接受，绝大多数时候返回值就是一个简单的值，除非是很复杂的链表或者图结构，但这种情况几乎不发生。&lt;/p&gt;</content></entry><entry><title>本地 AI 体验</title><link href="https://tiancaiamao.github.io/7900xtx-local-ai.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/7900xtx-local-ai.md</id><updated>2026-08-16T09:42:42Z</updated><content type="html">&lt;h2&gt;为什么要跑本地 AI&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;前沿模型不停地涨价，token 用不起了&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;glm5.2 以上，或者 kimi k3 等等，能力上面我是承认它们越来越强的。但是价格上面也是越来越离谱了，用不起。&lt;/p&gt;&lt;p&gt;像什么 lite 套餐的定位，拿着跑一个复杂任务都跑不完；pro 套餐也根本经不起蹬几下；max 到了 800多一个月，这也才到一个勉强日常使用，但是还达不到放开了蹬的水平。&lt;/p&gt;&lt;p&gt;当然，可以反驳说上便宜模型，比如 deepseek flash 的，5刀的 opencode go 订阅，放开了蹬基本蹬不完。
+确实是有道理...&lt;/p&gt;&lt;p&gt;假设一个月 token 上面花费 150，那三年下来是 5400。所以如果显卡成本投入过高会很不划算。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;隐私&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;本地模型一个重要好处，就是信息不会被发送到服务器。
+模型提供厂商可能拿我们的数据去训练它们的模型，更无节操的是如果使用中转，谁知道数据会被卖到哪里。&lt;/p&gt;&lt;p&gt;隐私对我来说不算特别 concern 的一个点，算是了胜于无吧。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;有硬件可以用来学习 AI&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;是，也不是。本地有了硬件确实可以玩一些很小的东西。比如从零开始学习训练一个模型。
+但是稍微大一点点的规模，本地消费级的显卡都搞不了。9B 的模型，训练起来消费级的单卡都搞不了。
+而这个尺寸的模型其实干了不啥。跑训练适合的是去租云上的硬件。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;可以以微调模型&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;LoRA 和 QLoRA 这些，确实可以微调模型用的显存不那么高，还是可以搞一搞&lt;/p&gt;&lt;ul&gt;&lt;li&gt;可以跑 agent harness 实验&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;对，自己写 agent 然后做一些比较跑 benchmark，或者 auto evolve 的实验，用 token plan 跑太贵了。
+跑工作中使用不一样，不足已产生有效价值。所以如果本地模型跑，还是挺适合的&lt;/p&gt;&lt;p&gt;什么样的硬件，可以跑什么样的模型，在&lt;a href=&quot;https://willitrunai.com/&quot;&gt;这个网站上&lt;/a&gt;可以查到&lt;/p&gt;&lt;ul&gt;&lt;li&gt;了解本地 AI 的发展速度&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;一个东西发展到什么程度，其实听别人说是不靠谱的。或者说，等大众都开始说的时候，已经晚了。
+信息的先发优势就是价值。&lt;/p&gt;&lt;p&gt;计算机刚出来的时候，大型机是整个房间那么大的设备。
+谁能想到，后来有了台式机，普通家庭都能用上了，有了笔记本，还能携带办工。
+再后来，有了手机！每个人都有了智能设备，名赋其实的第二脑。&lt;/p&gt;&lt;p&gt;前沿的云端 AI 确实在探索智能的上限，但是有理由相信，未来的 AI 一定是本地设备，
+甚至是手机都能享受到 AI 便利的。&lt;/p&gt;&lt;h2&gt;硬件选择逻辑&lt;/h2&gt;&lt;p&gt;前面算过账了，假设按三年多的硬件寿命算，超过 6000 的硬件投入，越往上越是回不了本。&lt;/p&gt;&lt;p&gt;所以就是捡垃圾可以搞一搞。咸鱼上面，telsa v100 这种，或者 mi50，都属于垃圾佬很喜欢的。
+就是卡比较老。&lt;/p&gt;&lt;p&gt;消费级显卡，2080魔改22G 太老了，3080魔改20G 可以搞一搞。3090 24G 算是一个甜点区，已经开始有点太贵了。
+矿卡风险以及购买渠道要跟商家斗智斗勇这种，不是我善长的。5090这种就不要想，绝对太贵了。买硬件的钱投到 deepseek token 上可以用到天荒地老。&lt;/p&gt;&lt;p&gt;其实跑 AI 的场景，显卡的计算能力都不是瓶颈。就是看显存容量，和显卡带宽。
+显存容量决定了模型放不放得下，而显卡带宽决定了吐字速度快不快。
+20G 以上算是跑本地大模型的一个基础要求，太小的模型智力低没意义，再大的模型要求的显存更多，消费级显卡放不上。&lt;/p&gt;&lt;p&gt;网上那种把 glm5 硬塞到内存，ssd 上面，用 CPU 跑的项目，其实没有任何实际意义。0.几 token 每秒，不到 1token 每秒的，即使跑起来又能干嘛呢？&lt;/p&gt;&lt;p&gt;还有一个异端就是 mac/amd/nivdia 他们几家出的共享显存的方案。内存可以堆特别高充当显存，可以解决模型放不放得下的问题。
+但是带宽受限，吐字速度问题解决不了。价格也都不便宜了。redis 作者 antirez 就搞了项目 mac 上面跑 deepseek flash。&lt;/p&gt;&lt;p&gt;咸鱼上还能看到华为昇腾 atlas，96G 显卡。这种卡它能解决模型放得下的问题，
+但是硬件带宽太低了，吐字肯定速度不太够的。还有就是据说这种其实是多个核拼起来的 96G，不是那种真的统一的 96G。
+再有就是它的生态兼容性问题，这些都是给企业玩的，不适合个人玩家玩。
+如果企业买多张卡组装起来，带宽就够了，服务许多用户，吞吐可以搞起来，并且放得下更大参数的模型。
+对于个人用户而言，它就是生态极差的 mac 统一内存方案。&lt;/p&gt;&lt;p&gt;论硬件的兼容性，nivdia 的卡肯定是最强的。但是性价比如嘛，就有点低。intel 的暂时不用看，退出显卡市场了。
+AMD 算是 RoCM 生态慢慢在成熟，已经非常多的场景能跑了，至少我要玩的本地 ai 场景基本可行。而且未来肯定是越来越好的，属于&amp;quot;战未来&amp;quot;了。&lt;/p&gt;&lt;p&gt;最后选择的是蓝宝石白金 7900xtx 24G，新卡三年质保。&lt;/p&gt;&lt;p&gt;我的判断是，下一代卡出来，上一代卡二手肯定要降价。然而...按当前行情，即使出下一代卡，新出的卡肯定要涨价，而不是价格持平，硬件变强。
+想想同样的货，卖给企业级，和卖给游戏玩家，赚到的钱不一样，那肯定做优先供应给企业。
+那么上一代卡仍然保值，我就当多花点钱，买个三年质保吧，性价比也还是挺实在的。&lt;/p&gt;&lt;p&gt;（更新：买完就涨价了，从 6000 不到涨到了 7000 多）&lt;/p&gt;&lt;h2&gt;模型验证&lt;/h2&gt;&lt;h3&gt;Qwen 3.6 27B&lt;/h3&gt;&lt;p&gt;这个模型就是当前的&lt;strong&gt;消费级硬件&lt;/strong&gt;上能跑的最强模型了。当然，有钱人可能会自己重新定义“消费级显卡”。&lt;/p&gt;&lt;p&gt;它强到地步？在 30B ~ 120B 模型区间来看，并没有比它强的。它的存在，就是断档的强。
+只用 30B 不到的这个规模的参数，可以把 100B 规模内的其它模型全部都按在地上捶。&lt;/p&gt;&lt;p&gt;48G 显卡能部署的上限是 70B 的模型，但是很尴尬，目前市面上 70B 的模型没有一个能打的，
+所以对于 ai coding 场景，即使 48G 的硬件，也没有直接的收益。&lt;/p&gt;&lt;p&gt;显卡到位后，我安装的第一个模型就是 Qwen 3.6 27B。ollama 默认配置跑，实测速度是 31 token/s。
+这个速度干活是可以接受了，交互式的场景，20 token/s 大概是及格线吧，就是输出的速度，跟用户读输出的速度，大概匹配的程度。&lt;/p&gt;&lt;p&gt;至于&lt;strong&gt;效果嘛，很遗憾，按我的标准，它还是干不了写代码这种活&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;做了一个画鹈鹕测试，表现很惊艳，是我测试的模型中表现最好的一个。&lt;/p&gt;&lt;p&gt;&lt;img src=&quot;/static/pelican_bike.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;做&lt;a href=&quot;/an-ai-debug-story.md&quot;&gt;这道题&lt;/a&gt;，它始终不能一口气把一个大文件生成好。
+不是生成出来有 bug，是文件都生成不好的程度。所以拿它写代码就别想了。&lt;/p&gt;&lt;p&gt;哪怕是被我吐糟为，妥妥的垃圾，顶多在 openclaw 场景搞一搞，不能用来写代码的 minimax 2.7，能力也比 qwen3.6 27B 更强。
+虽然我吐糟说，minimax 跟豆包坐一桌，但是吐糟归吐糟，好歹 minimax 2.7 是一个 230B A10B 的模型。qwen 27B 碰瓷不了。&lt;/p&gt;&lt;p&gt;也就是说，云上哪怕目前最差的模型，他们当前也比最强本地的模型强的。参数量碾压决定模型的能力，就是这么的直白和朴实无华。
+&lt;strong&gt;只能说本地 AI coding 的总体状况就是这样了&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;deepseek v4 flash 284B 参数，激活13B。又便宜，量大管饱，体感上，能力之前大概是高于 GLM4.7，略弱于 GLM5.1 的水平。
+昨天刚放新版本出来又更新了一轮，据说又有提升，很可能已经超越 GLM5.1 这档了。&lt;/p&gt;&lt;p&gt;(题外话，用习惯了 deepseek v4 flash 的吐字速度，再回头看 GLM4.7 的吐字速度，
+真是有种拉屎拉不出来感觉。而哪怕是 GLM4.7 的时代，也是跨过了 AI 能写代码了这个门槛的)。&lt;/p&gt;&lt;p&gt;性价比高的编程场景，还是默认用 deepseek flash，遇到它搞不定或者很复杂的任务，
+切换到旗舰模型，多 agent 协作来搞。说到底，我最后的使用姿势，还是走上 opencode 那套邪路上了。&lt;/p&gt;&lt;h3&gt;Ornith 1.0 3.5B A3B 去审查版本&lt;/h3&gt;&lt;p&gt;由于我发现靠 Qwen3.6 27B 用于我平时的写代码场景不太现实，我又去探索了一下其它场景。也不是日常非 coding，像 openclaw 那类场景。&lt;/p&gt;&lt;p&gt;本来 Qwen3.6 35B A3B 是这种场景候选，我直接选了一个基于它微调的版本。因为正好看到 Ornith 1.0 发布，就试了一下。&lt;/p&gt;&lt;p&gt;说体感吧，Ornith 1.0 3.5B A3B 在追求把任务自主完成的努力上面，比 Qwen 3.6 27B 更拼。
+Qwen27B 有时候莫名奇妙地停止，而 Ornith 这边没观察到类似问题。
+不过智商也就回事了，它很努力地在推进，不停地试，但是就是搞不出来。有时候也是各种乱七八糟的幻觉。&lt;/p&gt;&lt;p&gt;但是相对好玩的点是，这些去审查的版本你可以问它任何事情，它不拒绝。比如&lt;/p&gt;&lt;p&gt;&lt;img src=&quot;/static/抢银行.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;本地 AI 才方便这么玩，你懂的！&lt;/p&gt;&lt;h3&gt;Laguna 2.1 S&lt;/h3&gt;&lt;p&gt;laguna 2.1 s 也是最近出来的一个模型。这个模型的参数是 118B A8B。
+这是美国本地团队的开放权重模型，所以算是它们那边的国货之光，可以拿来宣传一下。&lt;/p&gt;&lt;p&gt;我在油管上看到一个视频，是 16G 显卡通过 offload 部分权重到 CPU，可以跑起来有 10 token/s。
+我的硬件比它强一点，所以抱着侥幸的心理万一我能跑个 15-20 token/s，
+再如果它能力比 Qwen27B 强一档，说不定能摸到本地 AI 编程的门槛。&lt;/p&gt;&lt;p&gt;结果是，60G 多的模型我下载了老半天才下好，跑来一看，7 token/s，这...&lt;/p&gt;&lt;p&gt;一顿调参下去，终于搞到了 10 token/s，虽然我硬件是比网上看的那个视频中更强的，也没跑出更高的吐字速度。
+再测试一下模型能力，先画个鹈鹕吧：&lt;/p&gt;&lt;p&gt;&lt;img src=&quot;/static/pelican_bike1.png&quot;&gt;鹈鹕.png&lt;/img&gt;&lt;/p&gt;&lt;p&gt;啊，噗！美国的开放权重模型中国货之光就这玩意呀？这跟我们的 deepseek 相比有种 “北乔峰，南慕容”的感觉。
+果然，AI 人才方面，现在只存在在中国的中国人，和在美国的中国人之间的竞争。&lt;/p&gt;&lt;p&gt;我没办法测它在我自己的 benchmark 那边的数据，因为显存不够，模型都要部分 offload 到 CPU，而留给上下文缓存的显存空间更是没有了。
+我没办法到开着比如 8K 的上下文，干任何实际有意义的活。测试也就没有继续测下去了。反正拉胯得狠，我都没法肯定这个模型是强于 Qwen 27B 的。&lt;/p&gt;&lt;h3&gt;Qwen3 Coder Next&lt;/h3&gt;&lt;p&gt;由于 laguna 2.1 S 我实际上是跑不起来的，模型又拉。而 Qwen27B 又达不到我能用来日常编程的程度，我还是有点不甘心，就去找一找规模在 100B 左右，期望能用来本地写代码的模型。&lt;/p&gt;&lt;p&gt;于是就找到 Qwen3 Coder Next 了。这个模型是 Qwen 3.6 27B 之前的模型，大概是今天的 2 月份发布的。
+结果这个速度还扯淡一下，也不知道是我调参没调好还是咋滴，总是在 CPU 上而不是好好用好 GPU，速度 &amp;lt;1 token/s。&lt;/p&gt;&lt;p&gt;这个模型也跑不起来，算是彻底放弃了本地 token 能用来写代码这个念头了。&lt;/p&gt;&lt;h3&gt;Agents A1&lt;/h3&gt;&lt;p&gt;其实有一堆 35B A3B 这种模型，像 Ornith，像 Agents A1 等等，这些基本都是基于 Qwen 去微调的。
+有些微调后的能力比原版本还更强一些，但也只是 Qwen 的底子实在太好，在巨人的肩膀上再踮踮脚。&lt;/p&gt;&lt;p&gt;其实日常也不太需要真的用去审查版本模型。所以微调去审查不如微调优化 agent 能力的。于是再测试了这个 Agents A1。&lt;/p&gt;&lt;p&gt;35B A3B MoE 跟 27B Dense 的主要差异是，都不做任何调优情况下，27B 在我显卡跑 30 token/s，而 35B A3B MoE 直接 76 token/s，速度飞起，丝滑得狠。
+感觉都有一点云上 deepseek flash 的速度爽感了。还有就是 35B A3B 这种模型，在 24G 显卡上跑我是可以开到 256K 上下文的，算是真正能做一点，这个智力水平下能做的事情。&lt;/p&gt;&lt;p&gt;我拿 Agents A1 这个模型也跑了个鹈鹕测试以及画金门大桥。鹈鹕画的不如 Qwen27B 的，但是金门大桥它能输出到文件了，虽然还是跑不起来任务失败，但是至少比 Qwen27B 的更近了一步。&lt;/p&gt;&lt;p&gt;最后是一些实测数据吧。&lt;/p&gt;&lt;p&gt;Qwen 3.6 27B -&amp;gt; Agents A1 -&amp;gt; Deepseek V4 flash (旧版) -&amp;gt; GLM 5.1&lt;/p&gt;&lt;ul&gt;&lt;li&gt;功能完成：  62.5% -&amp;gt;  67.5% -&amp;gt;   78.38%   -&amp;gt;   81.08%&lt;/li&gt;&lt;li&gt;行为评估：  47.5% -&amp;gt;  52.5% -&amp;gt;   62.16%   -&amp;gt;   64.86%&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;这是我本地自己测试我的 agent 的时候自建的一些 benchmark，无利益相关，算是相对公正的体现模型的实际水平吧。
+要说多少分能拿来真正干活，我说不上来，体感上就是 Agents A1 这种程度，还不行。&lt;/p&gt;&lt;p&gt;但是对于本地 AI 也不用过于失望吧，说不定这些参数量不大的模型，能力还有上涨空间。
+又或者，说不定哪天谁发布一个 70B 的模型，用 48G 显卡能跑，能力超过上一代 200B 模型的能力，那也可能能够得上能写代码的及格线。
+这是很有可能的。&lt;/p&gt;&lt;p&gt;要不然，另一个路线就是苹果的 mac m5 max 或者 AMD 的 Ryzen AI MAX+ 395 或者英伟达的 DGX Spark 这类的，靠统一内存充当显存，把容量搞上去。
+软件也在优化的进步，吐字速度会越来越快，这条路径 antirez 也就是 redis 那老哥的 deepseek flash 已经是可实用了。&lt;/p&gt;&lt;h2&gt;ComfyUI&lt;/h2&gt;&lt;p&gt;网上搜了一下，看到一个说法 “个人场景搞私有化的唯一作用就是涩涩，涩涩的话也不需要参数多大的模型”。
+暂时还没验证搞涩涩的效果，反正这张卡肯定是够的。&lt;/p&gt;&lt;hr /&gt;&lt;p&gt;2026.8.15
+更新：今天 Qwen3.8 27B 出来后，重新测试一下。
+很强，已经能作为日常使用了。&lt;/p&gt;&lt;p&gt;Qwen3.6 27B -&amp;gt; Agents A1 -&amp;gt; Qwen3.6 27B Fable Fusion -&amp;gt; Qwen3.8 27B -&amp;gt; Deepseek V4 flash (旧版) -&amp;gt; GLM 5.1 -&amp;gt; Deepseek V4 Flash (新版)&lt;/p&gt;&lt;ul&gt;&lt;li&gt;功能完成：  62.5% -&amp;gt;  67.5% -&amp;gt; 70%   -&amp;gt; [72.5%] -&amp;gt;  78.38%   -&amp;gt;   81.08%  -&amp;gt; ?&lt;/li&gt;&lt;li&gt;行为评估：  47.5% -&amp;gt;  52.5% -&amp;gt; 57.5% -&amp;gt; [60%]   -&amp;gt;  62.16%   -&amp;gt;   64.86%  -&amp;gt; ?&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;主观感受是，这个本地模型的水平，已经不输去年的年底的云端模型水平，达到了可用阶段。
+也就是大概 9 个月左右的时间，本地模型追赶上了前沿模型。&lt;/p&gt;&lt;p&gt;开启 MTP 后的吐字速度能上 50 多 token/s，快的时候能上 70：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;155.47.970.093 I slot launch_slot_: id  0 | task 131914 | processing task, is_child = 0
+155.51.454.617 I slot print_timing: id  0 | task 131914 | n_gen =    197, tg =  64.37 t/s, tg_3s =  64.69 t/s
+155.54.469.975 I slot print_timing: id  0 | task 131914 | n_gen =    411, tg =  67.65 t/s, tg_3s =  70.97 t/s
+155.57.490.783 I slot print_timing: id  0 | task 131914 | n_gen =    629, tg =  69.16 t/s, tg_3s =  72.17 t/s
+156.00.526.851 I slot print_timing: id  0 | task 131914 | n_gen =    858, tg =  70.73 t/s, tg_3s =  75.43 t/s
+156.03.562.550 I slot print_timing: id  0 | task 131914 | n_gen =   1090, tg =  71.87 t/s, tg_3s =  76.42 t/s
+156.06.605.008 I slot print_timing: id  0 | task 131914 | n_gen =   1322, tg =  72.60 t/s, tg_3s =  76.25 t/s
+156.08.408.668 I slot print_timing: id  0 | task 131914 | prompt eval time =     438.73 ms /    22 tokens (   19.94 ms per token,    50.14 tokens per second)
+156.08.408.672 I slot print_timing: id  0 | task 131914 |        eval time =   19998.81 ms /  1464 tokens (   13.67 ms per token,    73.15 tokens per second)
+156.08.408.672 I slot print_timing: id  0 | task 131914 |       total time =   20437.54 ms /  1486 tokens
+156.08.408.673 I slot print_timing: id  0 | task 131914 |    graphs reused =     128657
+156.08.408.677 I slot print_timing: id  0 | task 131914 | draft acceptance = 0.82385 ( 1043 accepted /  1266 generated), mean len =  3.47
+156.08.409.045 I slot      release: id  0 | task 131914 | stop processing: n_tokens = 7881, truncated = 0
+156.08.466.811 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 0.991 (&amp;gt; 0.100 thold), f_keep = 1.000
+156.08.467.189 I slot launch_slot_: id  0 | task 132339 | processing task, is_child = 0
+156.12.093.936 I slot print_timing: id  0 | task 132339 | n_gen =    190, tg =  62.27 t/s, tg_3s =  62.59 t/s
+156.15.125.794 I slot print_timing: id  0 | task 132339 | n_gen =    386, tg =  63.46 t/s, tg_3s =  64.65 t/s
+156.18.172.624 I slot print_timing: id  0 | task 132339 | n_gen =    597, tg =  65.39 t/s, tg_3s =  69.25 t/s
+156.21.195.019 I slot print_timing: id  0 | task 132339 | n_gen =    818, tg =  67.32 t/s, tg_3s =  73.12 t/s
+156.24.211.425 I slot print_timing: id  0 | task 132339 | n_gen =   1030, tg =  67.91 t/s, tg_3s =  70.28 t/s
+156.27.224.748 I slot print_timing: id  0 | task 132339 | n_gen =   1243, tg =  68.37 t/s, tg_3s =  70.69 t/s
+156.30.245.391 I slot print_timing: id  0 | task 132339 | n_gen =   1452, tg =  68.49 t/s, tg_3s =  69.19 t/s
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;上下文我开到了 192K，这不是测试能跑起来，而是真的能用了：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;llama-server -m /home/genius/models/Qwen3.8-27B/Qwen3.8-27B-Q4_K_M.gguf --mmproj /home/genius/models/Qwen3.8-27B/mmproj-F16.gguf -c 196608 --cache-type-k q8_0 --cache-type-v q4_0 --device Vulkan1 -ngl 999 --host 0.0.0.0 --port 8080 -fa on  --spec-type draft-mtp --alias qwen3.8-27b --reasoning-preserve --reasoning-format deepseek --reasoning-effort xhigh
+&lt;/code&gt;&lt;/pre&gt;</content></entry><entry><title>最近两个 AI 没搞定的 case 分析</title><link href="https://tiancaiamao.github.io/two-ai-failure-case-analysis.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/two-ai-failure-case-analysis.md</id><updated>2026-07-21T18:16:42Z</updated><content type="html">&lt;p&gt;最近在使用中又遇到的两处 AI 没有搞定的 case，分析一下原因，记录下来，下次遇到类似的场景希望可以更容易速通。&lt;/p&gt;&lt;p&gt;第一个 case 是实现一个扩展的 raft 协议。&lt;/p&gt;&lt;p&gt;前阵子写过一篇博客，是关于 &lt;a href=&quot;/raft-2F1A.md&quot;&gt;raft 如何支持 2F1A&lt;/a&gt;。这个东西有原始的&lt;a href=&quot;https://github.com/joshuazh-x/extended-raft-paper/blob/main/main.pdf&quot;&gt;论文&lt;/a&gt;，
+论文中是有 TLA 写的正确性证明的。然后也有在 &lt;a href=&quot;https://kccncjpn2025.sched.com/event/1x716/2-node-kubernetes-a-reliable-and-compatible-solution-xin-zhang-guang-hu-microsoft?iframe=no&quot;&gt;kubernetes&lt;/a&gt; 落地的，
+所以可行性方面没问题。而且 etcd 那边已经有一个 &lt;a href=&quot;https://github.com/etcd-io/raft/pull/168/changes#diff-842abaa9ff302b2c2ea5aacbe3c185916a625f25d727b0086dae77e989b4ae50&quot;&gt;PR&lt;/a&gt; 是可参考的实现。&lt;/p&gt;&lt;p&gt;我要做的就是让 AI 把这些抄过来，先抄 raft 层，然后再适配上层的应用。
+先跟 AI 讨论好 design，AI 很快就把代码写好了。&lt;/p&gt;&lt;p&gt;然后是测试设计，像这种关系到正确性的系统，测试才是关键。我大概分了三块内容：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;第一块是单测覆盖率，给 AI 一个验收标准比如新引入的相关代码的测试覆盖 85%&lt;/li&gt;&lt;li&gt;第二块是项目内的集成测试，给它约定好要的一些场景，比如 multi-raft 的 conf change&lt;/li&gt;&lt;li&gt;第三块是混沌测试，这块是最重要的，给一个跑着的集群，故意注入各种网络分区，杀节点等故障，观察系统正确性和恢复时间&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;前两项测试 AI 都快速莽过去了，最关键也是最难的混沌测试那里，一直撞墙。
+就是测试跑挂了之后，叫 AI 自己分析日志，自己定位原因并修复，这一步它一直都搞不定。&lt;/p&gt;&lt;p&gt;典型的症状就是，它自信满满地说，找到了 bug 是啥啥啥，然后说已修复。然后我来重跑，结果还是挂。
+一开始我想莽过去，撞了几次墙之后我意识到，又遇到 AI 能力边界场景了。像这种莽不过去的场景，基本上就是 token maxing 都莽不过去的。
+甚至一次 debug 过程，几乎可以把 5 小时限额直接清空，都还是做不出正确的 fix，纯粹烧 token。这时人就必须下场自己分析了。&lt;/p&gt;&lt;p&gt;AI 失败的过程是这样的，它大概可以通过日志看出来 raft 的行为失败了。但是&lt;strong&gt;失败在哪一步，它做的判断是不准确的&lt;/strong&gt;。
+位置判断的不准确，造成它的修复就不对，修错了位置，就会出现，有时候它把这处修复了，但其它问题又会在另外的地方冒出来 -- 因为它的根因判断就是错的。&lt;/p&gt;&lt;p&gt;举一些细节的例子，当两个 raft peer 之间网络 partition 了，然后 witness 在 term 9 给其中一个 peer 投票成为 leader，然后在 term 10 又给另一个 peer 投票成为 leader。
+网络隔离后，term 9 的 leader 还在活动。你问他是不是脑裂了，它说是。问它这种情况是否合理，它说合理，然后又要去补一个 peer 跟 witness 之间的心跳，说加上这个心跳，就可以让 stale leader 给 witness 通信的时候，
+意识到自己 stale 了，然后退回到 follower。一派胡言嘛！但是如果人类没有自己的主见，就会说，“哦，好，去修复吧”。&lt;/p&gt;&lt;p&gt;再比如 extended raft 那边 witness 本来是不需要存 log index 的。但是 AI 分析 bug 的时候，
+它会觉得，这里 witness 给 term 10 leader 投票是因为 witness 没存 log index，没有用 log index 跟普通 peer 的 term index 去比较，导致的 witness 在不应该给 peer 投票的时候投了票。
+于是它又去给 witness 加一个 log index 的持久化字段。这其实是标准 raft 的行为，但是不是 extended raft 论文的行为。&lt;strong&gt;AI 产生了幻觉，它用自己可能训练时就已经知道的 raft 知识，去判断我们给它的一篇新的论文中的知识&lt;/strong&gt;。
+如果程序员不自己读一读 extended raft 论文，就没法识别这里它搞错了，只能听经的“哦，好，去修复吧”。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;经过很长的日志分析的上下文之后，它会忘记什么样的行为是正确的&lt;/strong&gt;。然后它会引入自己认为的正确标准。
+由于 raft 协议比较复杂，在第一步出错之后，后续好些位置的其它错误会接踵而来。AI 判断错了位置，再用自己认为正确修复方式修复，
+然后几轮修复之后，会越错越离谱，改得面目全非。这时我必须每一轮都提醒它，判断要以论文原文为正确标准，要确认论文在该具体场景下的行为。&lt;/p&gt;&lt;p&gt;即使我这样引导，它还是无法在每个地方都做对。无论是根据日志推导，判断出错是发生在哪一步开始，还是根据论文确认最早出问题的这一步的正确操作是什么，
+只有中间有一个小环节没做对，放大到后期都会错得很远。&lt;/p&gt;&lt;p&gt;所以最终这个过程我只能自己来判断，我让 AI 分析完日志时间线之后，自己去核实时间线，纠正它第一步出错是发生在哪里，再确认论文中正确的做法是怎么做，这样才把问题最终一步步的修完了。
+这个场景就是&lt;strong&gt;只能人类一步一步纠偏&lt;/strong&gt;，很累。而且 AI 对论文的理解也很多时候有问题，人类还需要自己先理解，知道什么样是正确，才有能力去纠正偏。&lt;/p&gt;&lt;p&gt;老实说，我并不认为 AI 更强大之后，能处理这类的 case，如果人类放弃了思考，认知托管给 AI，会是挺灾难的。
+这类场景对人的要求很高。普通人如果只是一直活在 AI 的舒适区，就会一直高呼 AI 牛逼。&lt;/p&gt;&lt;p&gt;AI 也有确实牛逼的地方。还是在这个 case 里面遇到的一个，原始论文中，给 witness 发消息是一个 handle witness message 函数，
+这个函数是一个 CAS 操作，访问 WitnessStorage 记录下 term subterm 等字段信息，原论文说推荐用 s3 或者 ntfs 都可以。
+我抽象成了一个 WitnessStorage 的接口，具体的实现可以用 s3 或者 etcd 或者随便其它的能支持 CAS 写的高可用存储。&lt;/p&gt;&lt;p&gt;这里有一个小细节是，访问 WitnessStorage 是跨网络的请求并且可能卡，原论文中 handle witness message 是一个同步操作，CAS 成功了就是成功了。
+但是我的实际代码中必须拆成异步的，因为如果 handle witness message 访问 WitnessStorage 卡住，就把 raft 线程给卡住了，其它 raft 消息都处理不了。&lt;/p&gt;&lt;p&gt;然后 AI 就在这里揪出来一个 bug！同步转异步之后，返回的 CAS 成功了，不表示真的成功了。在发送请求到异步收到结果的过程中，有可能出现其它的 WitnessStorage 访问插入，
+使得这个 CAS 成功的结果是过时的！确实 AI 有牛逼的时候，找出真实的 bug 而我没考虑到。&lt;/p&gt;&lt;p&gt;第二个 AI 没搞定的 case 是编译器自举。&lt;/p&gt;&lt;p&gt;也是前面我写过博客了，&lt;a href=&quot;/tiny-actor.md&quot;&gt;tinyactor&lt;/a&gt; 是我用 AI 写的一个玩具的 actor 模型的语言。字节码虚拟机，每个 actor 独立 GC，&lt;/p&gt;&lt;p&gt;最初我用 lisp 弄了一个内核出来，后面我要做语言的自举，其实是大部分参考 gleam 的语法，lisp 退化到内部 IR 或者说 AST 的地位，用户使用的时候还是会用更友好的语法，而实现是途经了 lisp 最终到 C 实现的虚拟机。
+这边一开始都是用 C 弄出来，从 parser 到 compile 之类的。等上层越来越成熟之后，我就想，该是时候做 bootstrap 了。上层全部用 tinyactor 语言自身来写，包括 parse / compile / type check 这些，只保留 VM 和 runtime 去用 C 写。&lt;/p&gt;&lt;p&gt;结果我发现 bootstrap 这个场景让 AI 搞，它也是一直撞墙。&lt;/p&gt;&lt;p&gt;这个场景麻烦在什么地方？&lt;strong&gt;浮沙筑高台&lt;/strong&gt;。底层的 runtime 其实不那么稳，都是 AI 写的底子。虽然给它很多 test case 然后暴力莽过去的，能跑，但不知道什么边边角角就跑出问题来。&lt;/p&gt;&lt;p&gt;举个例子，AI 写代码的时候，像 list length 这种，它用的非尾递归方式写的，在跑 repo 中单测一类的，它都跑得过去。但是一旦规模大了，非尾递归写法就爆栈了。
+典型的例子就是，在 bootstrap 的时候，有些代码的 AST 就是比较大的，然后到一个临界点就爆栈。你说它错呢，这算法本身也没写错。关键是爆栈之后，我们的报错信息是没有为什么的。
+这不像一个成熟编译器，有良好的错误信息，所以 AI 拿到的信息就是，做某一步，然后挂了，也没有提示是怎么挂的。所以这就比 AI 用 C 语言写东西有挑战得多。&lt;/p&gt;&lt;p&gt;像这类似的场景还很多，比如 actor 开始的初始化栈我只给了 512 字节，这样我启动 1M 个 actor 也就才 512M，比 Go 要省多了。但是全部对象都在这个空间里面分配，而 parser 的时候读文件那一步，
+直接需要分配超过 512 字符串，就挂了。AI 改就直接把栈加倍加倍再加倍，就想绕过去一些问题。&lt;/p&gt;&lt;p&gt;也确实遇到了一些 GC 相关的 bug，AI 实现出来的 GC 并不稳定，把有些变量没有加到 GC Root 里面，导致 GC 那边释放了对象，然后访问时出错。AI 能查这一些问题，我还是挺佩服的。
+但问题是什么？我们的目标其实是做自举，而 AI 在做的过程中，就遇到这一类的坑，然后去修 GC，做着做着，也不知道自己在做什么了，GC 也没彻底修好。
+说到底还是那句话：浮沙筑高台。AI 前面打的基础太薄弱了，不像人打出来的基础。然后再在这个基础上往后推，就发现摇摇欲坠。&lt;/p&gt;&lt;p&gt;再然后，自举本身有很复杂的地方。步骤是很麻烦的，首先要用 C 实现一遍，C 实现的把 parser.ta codegen.ta typecheck.ta 几个文件都编译出来，然后 VM 再用这些编译结果，再去编译自己。&lt;/p&gt;&lt;p&gt;其实非常需要一个中间步骤，对比由 C 编译出来的 bytecode 文件，跟加载 bytecode 后再用 bytecode 里面的 compile 函数，编译出来的 bytecode 文件，是否一模一样。
+但是 AI 在这一步做得很不好，它没有这个方法论。在这一步不做对，又是一个浮沙筑高台。&lt;/p&gt;&lt;p&gt;再有就是生成 bootstrap 文件的过程，AI 把 VM 搞破坏掉了。首先是我们用 C 编译出来的 parser / codegen 的 bytecode，它们被打包了变成 bootstrap 文件，VM 启动后加载。
+跑测试我们用的这一份 bootstrap 文件去跑测试的，测试能过。
+然后，我们再用这个 bootstrap 文件中的 compile 函数再次 compile，生成一份新的 bootstrap，这一步就有问题了，生成出来的 bootstrap 文件跟原始的 C 生成出来的那一个，并不一致。&lt;/p&gt;&lt;p&gt;AI 拿这个错的 bootstrap 去跑测试，发现有许多测试跑不过。它不知道错误是因为，它的 bootstrap 文件本身不对了，它已经把 bootstrap 搞坏了，所以跑出来的测试也不对。
+但它就是会去分析测试本身，一直到死都找不出来咋挂的。&lt;/p&gt;&lt;p&gt;更气人的是什么？它用有问题 bootstrap 文件，覆盖掉了正确的 bootstrap 文件，在那之后，测试就再也跑不过了。
+然后它说，“已经完成了。那些跑不过的测试，是原本就存在的！不属于要修改的范围”... 我它妈一口老血喷出来！就这情况，要是想让 AI 莽过去，怎么可能。&lt;/p&gt;&lt;p&gt;老实说，AI 能把 bytecode VM 能搞出来，也是挺惊艳的了。只是它的上限还不够人类这么强大。尤其是对于全局的理解能力和一些软件开发方法轮。
+它没法淘汰所有的程序员，但是这个过程对程序员的效率还是提升了特别多的。在它不撞墙的时候，已经写了许多的代码了。
+所以只要在 AI 特定的搞不定的点上面，回归一点点古法编程，人 + AI 还是可以兜得住。把 AI 当工具使用就好了。&lt;/p&gt;</content></entry><entry><title>使用 ai 编程大半年后的心态变化</title><link href="https://tiancaiamao.github.io/mindset-change-after-ai-for-half-year.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/mindset-change-after-ai-for-half-year.md</id><updated>2026-06-26T22:18:42Z</updated><content type="html">&lt;p&gt;大概在 25 年的 12 月开始重度使用 ai，到目前已经过去大半年了。
+我发过一些朋友圈或者写过博客，正好把这大半年的心态变化记录下来。&lt;/p&gt;&lt;h2&gt;2025.12.19&lt;/h2&gt;&lt;p&gt;一切从这里开始，&lt;a href=&quot;/ai-reflection.md&quot;&gt;AI 带来的思考&lt;/a&gt;，这篇博客是 2025.12.19 写下的，
+当时应该使用 AI 编程至少有大半个月以上了。很多软件都在做推广，注册就送一定额度 token 或者 1个月会员之类的。
+所以这个阶段我白嫖体验了好多的软件，也覆盖到了当时好多种的模型。&lt;/p&gt;&lt;h2&gt;2025.12.28&lt;/h2&gt;&lt;p&gt;&lt;a href=&quot;/2025.md&quot;&gt;2025 的年终总结&lt;/a&gt;里，我提了一个问题：当所有程序员都获得十倍生产力之后，会发生什么？&lt;/p&gt;&lt;p&gt;当时我已经隐约已经有不好的预感，&lt;strong&gt;AI 解放的编程生产力会过剩，而这会导致大量程序员岗位的消失&lt;/strong&gt;。&lt;/p&gt;&lt;h2&gt;2026.1.15&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;从纸带，到汇编，到高级编程语言，再到ai问世，vibe coding从概念到普及...时代的车轮滚滚向前，我们应该是最后一代经历“古法编程”的程序员了。2026年，见证历史&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;转发了一条朋友圈，其内容是&lt;a href=&quot;https://mp.weixin.qq.com/s/mO0j9z5eFSVaV9C47uAGAQ&quot;&gt;马斯克宣判：再见，程序员！奇点就在 2026&lt;/a&gt;&lt;/p&gt;&lt;h2&gt;2026.1.17&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;我此时此刻的震撼，放在普通人身上可能无法理解。如果做一个通俗的类比，就是当下的 AI coding 的能力，正好处于围棋领域，阿法狗下赢柯洁的那个时间节点。自此之后，再也没有人类在编程这个领域妄想去挑战 AI 了，而我，程序员，哭得像个柯洁&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;我意识到 AI 的 coding 能力，即将彻底淘汰掉手写代码的方式。&lt;strong&gt;而当下正好处于那个奇特的时间点。&lt;/strong&gt;
+可能不同的人感受会早一点或者晚一点，但是即使误差一两个月，也不影响这个判断的本质。&lt;/p&gt;&lt;p&gt;与此同时，我写下了这篇&lt;a href=&quot;/ai-capability-expore.md&quot;&gt;AI Coding 能力边界探索&lt;/a&gt; 博客。&lt;/p&gt;&lt;h2&gt;2026.1.21&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;又一道防线被ai突破了。复杂的内存安全问题，这种需要很多经验，分析能力，而且定位问题涉及和调试器强交互的场景，以前是很好区分菜鸟和资深程序员的。而现在，只要写个能测试和复现的脚本，asan 和tsan 工具开起来，丢给ai去ralph loop就完事了。&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;我原本以为，高级工程师训练出来的 debug 思维和调试经验，这些是属于代码之外，有可能还是护城河。
+结果被击得粉碎！&lt;/p&gt;&lt;p&gt;AI 可以学会以使用调试器，AI 可以写测试用例后去一遍一遍地执行去触发那种很低概率去触发点 bug，只要有可能复现的，AI 都可以把它跑出来。
+甚至纯分析 bug 的能力，AI 也强于人类了。&lt;/p&gt;&lt;h2&gt;2026.2.5&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;写代码是不可能写代码的，这辈子都不可能再手写代码的。调试又不想搞，分析又懒得弄，只能换个prompt再莽一莽，才能维持得了我还是程序员这样子。读代码理解代码？不存在的！AI写的跑不通太正常了，反正老子一行都懒得看，换个说法再让它干就完事，莽过去就是胜利。现在的coding agent啊，个个都是人才，代码写得又快又好，我超喜欢的！&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;我宣布拥抱 AI，我宣布打不过就加入。有了 AI 的加持，这个阶段的我自信心爆棚。我觉得自己仿佛无所不能了。&lt;/p&gt;&lt;p&gt;对，这个阶段正是愚昧之颠。&lt;/p&gt;&lt;h2&gt;2026.2.8&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;把 pi 整合到我目前日常使用的编辑器 ad 之后，去研究了一下 pi 的代码。然后发现最核心的 agent loop 就百来行，然后是 session 管理，然后再 read bash edit 等几个工具实现一下，原型就有了。在 ad 编辑中集成，TUI 模块我不需要；对接全部的 model provider 我不需要，又可省不少代码；只提取内核部分使用，它的 coding agent 模块我也不需要。最后让 ai 评估了一下，4000 行代码就能搞定。忍不住诱惑让 ai 帮忙撸了半天，现在可以用上自己 vibe coding 出来的 coding agent 了。&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;撸了自己的 agent，其实当时的 agent 写出来我一行代码都没认真看过。&lt;/p&gt;&lt;h2&gt;2026.2.28&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;最新的感悟：AI时代写代码完全不重要，但是如果想要系统还能维护的话，review 代码至关重要…之前那种 “看都不想看，能跑就行，不能跑换个prompt再莽一莽” 的搞法，后期维护不下去了&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;自己的 agent 用着用着，发现 bug 根本修不完，经常修一个，送两个。
+越来越维护不下去了，开始有一点点反思，这个阶段算是刚刚走过绝望之谷。&lt;/p&gt;&lt;p&gt;AI 有一种&amp;quot;初见杀&amp;quot;的效果，开始时做 demo 特别惊艳。但是到了维护阶段就火葬场。
+经历这个阶段，大概需要 3-4 个月吧。取决于使用的强度，以及用来写了多个东西。一定是需要走到维护阶段，才能获得这种反馈的。&lt;/p&gt;&lt;p&gt;这时我开始觉得需要 review 代码了，但是其实靠 review 代码这个方向也不对。
+当然，这是后来的感悟了。至少代码还是要读，这个点是对的。&lt;/p&gt;&lt;h2&gt;2026.3.6&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;把我的 coding agent 作为&amp;quot;心脏&amp;quot;，再拿 picoclaw 缝合一下，搞了一个 claw agent，再写点工作流技能。AI 时代应该只有提出需求和 approve PR 是人操作，其它都不应该由人来做&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;openclaw 很火爆的时候，全民养小&amp;quot;龙虾&amp;quot;。老实说，我并没有认真养过。&lt;/p&gt;&lt;p&gt;但是我也有被那种&amp;quot;龙虾在后台给我没日没夜干活&amp;quot;的思想短期地洗脑，纯属跟风。&lt;/p&gt;&lt;h2&gt;2026.3.30&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;开启 agent 的自进化之路！&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;我自己的 agent 已经越来越好用了，正好也看过卡帕西的 auto research，所以实践用来这种方式让 agent 优化 prompt 来自进化。&lt;/p&gt;&lt;h2&gt;2026.4.24&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;对 agent harness 理解达到了一个&amp;quot;重剑无锋&amp;quot;的境界(可能正是 pi agent 作者半年前走过的路)。当大家还在体验各种新项目，尝试更重的框架时，我一直在做减法，返璞归真&lt;/p&gt;&lt;ul&gt;&lt;li&gt;不需要给 agent 塞很多 tool，cli + skill 就是最通用的 tool&lt;/li&gt;&lt;li&gt;tmux + subagent 提供了足够强大的基础设施&lt;/li&gt;&lt;li&gt;小的 cli + skill 是可组合的，而复杂的框架则没有这种灵活性&lt;/li&gt;&lt;li&gt;其实 agent 本身也可是以一个 cli，无论 codex 或 claude，而调用 cli 就是最自然的编排&lt;/li&gt;&lt;li&gt;cli 完全可以提供基础设施，围绕任务分发，围绕 agent 通信，围绕子 agent 生命期管理，剩下的就是让 agent 去调用 cli，这一切，只需要本地文件系统&lt;/li&gt;&lt;/ul&gt;&lt;/blockquote&gt;&lt;p&gt;写了一篇博客&lt;a href=&quot;/my-harness-engineering.md&quot;&gt;我的 harness engineering 工程实践&lt;/a&gt;。&lt;/p&gt;&lt;p&gt;这个阶段的我已经很理性了。我的 agent 已经成为了我日常使用的工具，这个阶段我在疯狂地吸收 agent harness 的知识。
+真正用适合自己的方式，来使用 AI。&lt;/p&gt;&lt;h2&gt;2026.6.1&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;AI还很弱的时候，我们可以一眼判断这东西不行。而现在这个阶段，事情变得魔幻了。说它不行吧，很多时候它是行的，而且还会越来越强。但是说它行吧，它又产出一堆似是而非的东西，给人们制造可以的幻觉。
+矛盾点在于：在专业领域它的能力正好超过了大部分人的辩识能力。
+所以当下阶段体验就非常割裂：完全不用不行，不用效率落后了；完全依赖也不行，认知卸载，AI会变成许愿机，没准啥时候拉一坨大的；理性使用反而会更累，因为判断它行或不行，需要消耗特别多的注意力，而且是AI越强大，这种判断的消耗越大！&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;开悟之坡！&lt;/p&gt;&lt;h2&gt;2026.6.11&lt;/h2&gt;&lt;blockquote&gt;&lt;p&gt;发现在纯vibe coding的情况下，ai是把人类当调试器在使用，来补充它的眼睛，它的手和脚，为它提供正确错误的外界反馈。这个过程我的大脑停止了思考，写代码变成了许愿，我完全不知道发生了什么，只知道它生成的那一坨，我接不住，也维护不了。最终放弃了实验。能把游戏真搞出来，这哥们还是猛的。&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;转发了一条朋友圈，有人在不懂代码的情况下，&lt;a href=&quot;https://mp.weixin.qq.com/s/uAHp4B7v09w-ScA5Qqt8zQ&quot;&gt;用 AI 做游戏&lt;/a&gt;。&lt;/p&gt;&lt;p&gt;这个时候我已经经历了很多，也理性了很多。我已经站在反对 AI 的阵营了，立场决定的。
+我既不认为 AI 能替代程序员，也不希望它替代程序员了。&lt;/p&gt;&lt;h2&gt;2026.6.26&lt;/h2&gt;&lt;p&gt;今天，故事还在继续...&lt;/p&gt;&lt;p&gt;我经历过折腾多 multi agent 协作，也疯狂地研究过 agent harness 技巧，也搞过那种描述需求，然后由 agent 从实现，到 review，到合 pr 完全自动化的工作流。
+听过无数的“你的真人同事被蒸馏”，“你新来的 agent 同事”，“未来是一人指挥一支 agent 军队” 的鬼故事。那是资本家的叙事。&lt;/p&gt;&lt;p&gt;所以 AI 到底能不能替代程序员？其实不重要了。因为它确实能提升很高的生产效率。对于程序员，AI 是毒品，粘上了就摆脱不掉。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;每当它提升 30% 的效率，就表示可以裁员 30%。它提升 50% 的效率，就表示可以裁员 50%。&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;AI 也确实能让完全不懂编程的人，能够写东西。哪怕它写得不专业，哪怕在专业程序员眼中，AI 生成的代码确实是一坨屎。
+但是它能让写代码这个事情，变得不再稀缺，从而劣币驱逐良币。
+用经济学词汇，叫需求可替代性：手写代码很贵，而替代品就是 AI 写的代码。当存在这种替代品存在，提供选择的时候，原商品价格就会下降。&lt;/p&gt;&lt;p&gt;最后写写我当前是怎么样保守使用 AI 的。&lt;/p&gt;&lt;pre&gt;&lt;code&gt;前期如果自己不设计，等 AI 拉一坨了后期理解不了
+AI 拉一坨之后，靠它自己验证，它放过去的问题也无法知道
+即使前面是自己设计了，到后期看 PR 也 review 不了
+一方面是 PR 太快太大了
+另一方面，从 PR 级别去理解看特别难，不是自己亲手写的代码，review 也是无力的
+我现在解法是刻意慢下来，一边不停地重构删代码，另一边不停地补测试覆盖率
+就实际程序跑起来，然后收集真实 coverage
+然后对着 coverage 看相应的代码
+覆盖低的，就问 AI，这块为什么没跑到，可不可以删
+持续这个过程，就可以把对代码的理解慢慢补回来，同时也把代码质量和覆盖率提上来
+当代码一直删到不太好删的时候，软件才是它该有的规模
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;以及心态是怎样的：把 AI 当工具用，好好发挥它带来的效率提升，但是不要放弃自主思考。&lt;/p&gt;&lt;p&gt;期望 AI 的发展最好停滞在当前阶段，更好是回到过去，停滞在 copilot 形态，永远坐在那个副驾驶室！&lt;/p&gt;</content></entry><entry><title>两节点高可用强一致 -- raft 2F1A</title><link href="https://tiancaiamao.github.io/raft-2F1A.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/raft-2F1A.md</id><updated>2026-06-25T20:56:42Z</updated><content type="html">&lt;p&gt;raft 在一致性这个领域占据了主导地位。打败 paxos 的原因是它理解简单，实现简单。
+但是它是有代价的，三副本的成本比较高。能不能在两副本的情况下，达成高可用强一致？
+这就是 2F1A，即 2副本1仲裁(arbitrator)。&lt;/p&gt;&lt;p&gt;raft 配置两副本能不能跑呢？能跑...但是遇到挂 1 副本之后，就会 quorum 无法达成 majority，然后不可用。
+3 副本没这个问题是因为 3 副本挂一副本后，剩下 2 副本仍然构成 majority。&lt;/p&gt;&lt;p&gt;解决这个问题有两个方向：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;当 2 副本挂掉 1 副本后，我们将 raft group 缩到 1 副本，仍然可以满足 majority 提供服务&lt;/li&gt;&lt;li&gt;弄一个投票而不存数据的副本出来组建 3 副本，这样两副本挂 1 个剩下的仍然满足 majority&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;这两个方向对于 raft 都很难。&lt;/p&gt;&lt;p&gt;先解释前者。可能有人问，如果我们把 raft 退化成一个主从，同步复制的主从。
+一旦有一个节点挂掉，有一个仲裁节点把挂掉的那个踢掉，活着的变成单主。这个概念上很好解释呀！
+实现上到底有什么不可行的呢？&lt;/p&gt;&lt;p&gt;让我们先听听 AI 怎么说。&lt;/p&gt;&lt;h2&gt;问题 1：你怎么知道它&amp;quot;挂了&amp;quot;？&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;直觉&lt;/strong&gt;：B 超时没响应 → B 挂了 → 踢掉。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;现实&lt;/strong&gt;：B 没挂，只是网络分区了。B 活着，还认为自己是 secondary，还在接受旧的 primary
+的同步。&lt;/p&gt;&lt;pre&gt;&lt;code&gt;实际场景：
+A (primary) ←─网络断了─→ B (secondary)
+     ↓
+A 联系 Arbiter：&amp;quot;B 不响应&amp;quot;
+Arbiter 同意踢掉 B
+A 变成单主，继续写
+     ↓
+同时 B 这边：
+B 联系不上 A，但 B 的本地数据是完整的
+如果 B 也能联系上 Arbiter → B 可能也发起&amp;quot;踢掉 A&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;&lt;strong&gt;这就是脑裂&lt;/strong&gt;。两个节点都认为对方挂了，都认为自己是合法的主。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;解法&lt;/strong&gt;：必须有一个&lt;strong&gt;强一致的裁决协议&lt;/strong&gt;。Arbiter 不是&amp;quot;裁判喊谁赢谁就赢&amp;quot;，而是 Arbiter +
+幸存者必须&lt;strong&gt;共同完成一次共识投票&lt;/strong&gt;（Paxos prepare/promise
+或等价机制）才能变更成员组。这个投票本身就是一个 mini 分布式共识过程。&lt;/p&gt;&lt;h2&gt;问题 2：踢掉一个节点的操作本身需要共识 → 鸡生蛋&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;直觉&lt;/strong&gt;：Arbiter 说踢就踢。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;现实&lt;/strong&gt;：&amp;quot;踢掉 B&amp;quot; 是一次&lt;strong&gt;成员组变更&lt;/strong&gt;，这个变更必须被持久化，且所有存活的参与者达成一致。&lt;/p&gt;&lt;pre&gt;&lt;code&gt;变更前：{A, B, Arbiter}
+变更后：{A, Arbiter}（B 降级为 learner）
+
+问题：这个变更日志谁来 commit？
+- A 单独不能 commit（此时 majority 还是 2/3）
+- 需要 Arbiter 参与投票才能达到 majority
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;所以 Arbiter &lt;strong&gt;必须参与配置变更的 quorum&lt;/strong&gt;。这就是为什么 OceanBase 的仲裁成员虽然不参与日志
+commit，但&lt;strong&gt;必须参与配置变更投票和 leader 选举投票&lt;/strong&gt;。&lt;/p&gt;&lt;h2&gt;问题 3：切主时的日志连续性 — 到底 commit 到哪了？&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;直觉&lt;/strong&gt;：同步复制 → B 有完整数据 → B 直接上。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;现实&lt;/strong&gt;：考虑这个时间线：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;t1: Client 发写请求给 A
+t2: A 写本地日志 [100]
+t3: A 把 [100] 发给 B
+t4: B 收到 [100]，正在刷盘...
+t5: B 返回 ack 给 A（&amp;quot;我持久化了&amp;quot;）  ← 这个 ack 在路上
+t6: A 还没收到 ack
+t7: B 炸了
+
+问题：[100] 到底算不算 committed？
+- A 的视角：没收到 B 的 ack → 没 commit → 客户端应该收到失败
+- B 的视角（如果 B 没死，只是慢）：已经持久化了 [100]
+- 如果 B 恢复后当了主 → [100] 存在但客户端以为失败了 → 幻读
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;同步复制中，&lt;strong&gt;&amp;quot;同步&amp;quot; 这个词的定义本身就是核心设计决策&lt;/strong&gt;：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;收到 B 的 ack 才算 commit？→ B 慢就全卡&lt;/li&gt;&lt;li&gt;A 本地持久化就算 commit，B 异步追赶？→ B 故障时可能丢数据&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;&lt;strong&gt;OceanBase 的解法&lt;/strong&gt;：quorum-based。正常时需要 A+B（majority(2)=2）才 commit。B
+挂了之后，先完成 degrade 配置变更（需要 A+Arbiter 投票），然后 &lt;code&gt;log_sync_replica_num=1&lt;/code&gt;，A
+单独就能 commit。&lt;strong&gt;degrade 操作完成之前，A 不能 commit 新日志&lt;/strong&gt;（代码中
+&lt;code&gt;is_changing_config_with_arb()&lt;/code&gt; 检查）。&lt;/p&gt;&lt;hr /&gt;&lt;h2&gt;问题 4：老主 fencing — 怎么保证它不再写？&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;直觉&lt;/strong&gt;：B 被踢掉了，A 是新主。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;现实&lt;/strong&gt;：如果 A 没有立刻知道自己被踢（比如 A 其实只是网络分区，没挂），A
+可能继续接受客户端写请求。&lt;/p&gt;&lt;pre&gt;&lt;code&gt;真正的故障场景（不是 B 挂，而是 A 和 B 之间网络断了）：
+
+A 的视角：B 不响应 → 联系 Arbiter → degrade B → 单独 commit
+B 的视角：A 不响应 → 我也联系 Arbiter...
+
+谁能先联系上 Arbiter，谁就活。
+另一个必须被 fence（ fencing）。
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;&lt;strong&gt;解法&lt;/strong&gt;：&lt;/p&gt;&lt;ol&gt;&lt;li&gt;&lt;strong&gt;租约机制（Lease）&lt;/strong&gt;：leader 有时间限定的租约，过期前不能被抢&lt;/li&gt;&lt;li&gt;&lt;strong&gt;Epoch / Term 机制&lt;/strong&gt;：每次切主递增 term，旧 term 的写操作被拒绝&lt;/li&gt;&lt;li&gt;&lt;strong&gt;客户端 fencing&lt;/strong&gt;：客户端发现新主后，旧主的写被拒绝&lt;/li&gt;&lt;/ol&gt;&lt;p&gt;这些都不复杂，但&lt;strong&gt;每一个都必须正确实现&lt;/strong&gt;，漏一个就是数据损坏。&lt;/p&gt;&lt;h2&gt;问题 5：故障节点恢复 — 追赶期间的正确性&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;直觉&lt;/strong&gt;：B 恢复了，追一下日志就行。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;现实&lt;/strong&gt;：B 被踢掉期间，A 单主写了 [100, 200)。B 恢复时：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;B 本地日志停在 [100]
+A 已经写到了 [200]
+
+情况 1：B 只是网络恢复（没重启）
+  → B 可能还以为自己是 acceptor
+  → B 可能发起选举（如果 term 过期）
+  → 需要正确地被降级为 learner，安静地追日志
+
+情况 2：B 重启了
+  → B 读本地 meta，发现自己已经被移出 log_sync_memberlist
+  → B 作为 learner 向 A 请求 [100, 200) 的日志
+  → 追平后，upgrade 回 acceptor
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;追赶期间，B 不能参与 quorum（否则可能把未追平的状态带入 commit 决策）。这就是
+&lt;code&gt;degraded_learnerlist&lt;/code&gt; 存在的意义。&lt;/p&gt;&lt;p&gt;| 问题 | 一句话 | 做不好的后果 |
+|------|--------|------------|
+| 怎么判断挂了？ | 不是超时就踢，需要 Arbiter+幸存者共识投票 | 脑裂，双主写 |
+| 踢人需要共识 | 配置变更本身需要 Arbiter 参与投票 | 变更丢失，回退到旧配置 |
+| Commit 到哪了？ | Degrade 完成前不能 commit 新日志 | 已提交数据丢失 |
+| 老主怎么办？ | Term/Lease fencing | 老主继续写，数据分叉 |
+| 恢复时怎么追？ | 降级为 learner，追平再升级 | 脏数据参与决策 |&lt;/p&gt;&lt;p&gt;这不是不可行 但这不是 &amp;quot;加个 arbiter 就完事了&amp;quot; 的简单工程。
+它是一个完整的分布式共识协议的变体。上述 5 个问题，每一个都需要精确的设计和实现。&lt;/p&gt;&lt;p&gt;现在不看上面的内容，再回到 raft。具体到 raft 两副本的时候，有几个问题就是挺不好处理的。&lt;/p&gt;&lt;p&gt;首先集群成员变更。在 raft 的 conf change 中，join consensus 有描述变更的处理。
+它是要求变更前的配置，和变更后的配置，两者能同时达成 majority。&lt;/p&gt;&lt;p&gt;比如 3 副本情况下 {1, 2, 3} -&amp;gt; {2, 3, 4} 把 1 拿掉，把 4 加进来，挂任何一个点，前后配置还可以满足 majority。
+但是 2 副本情况下 {1, 2} -&amp;gt; {2, 3} 变更过程中, 只要挂掉 1 个，无论挂哪一个，都会出现前后配置无法达成 majority，
+这时就会进入不了新配置，又回退不了旧配置，卡死的情况。&lt;/p&gt;&lt;p&gt;再一个场景，比如集群滚动升级。如果我们是三副本的时候，可以先停一个节点，升级到新版本。升级后再停一个再升级，
+一直可以滚动到新版本，过程中不中断服务。但是到了两副本的情况下，容忍的前提是 reconfiguration 把副本数降到 1 从而恢复可用。
+但是滚动升级这个场景，滚动过程中不好保证继续提供可用性。因为不好提前升到 3 副本容错，或者提前把 raft group 降到 1 去把待滚动的节点踢出去。&lt;/p&gt;&lt;p&gt;还有就是两副本之间，出现网络隔离，但是它们跟 arbiter 都是连通的。
+这个场景 arbiter 很难介入去调整。两个副本都因为拿不到 majority 投票降为非 leader，又选不出 leader 来。
+即使我们去做一些处理，比如 A 无法拿到 B 选票之后，去 arbiter 那边要求降级配置，
+然后 arbiter 回复同意，只要 arbiter 同时了 A 的降级请求，就不再接受 B 的请求，来防脑裂，
+这也是一个小型的共识协议了。&lt;/p&gt;&lt;p&gt;为什么会这么绕呢？本质还是因为 raft 协议根本没有包含写两副本怎么样处理 conf change 这个事情！&lt;/p&gt;&lt;p&gt;那我们换一个思路行不行。前面说了，另一条路是弄 3 副本，然后其实有一个副本是假相嘛，这样挂 2F 中的一个之后，
+剩下的还可以构成 majority。&lt;/p&gt;&lt;p&gt;raft 协议里面是有一些特殊的角色的，比如说 learner，它不参与 quorum 投票，其它跟 voter 差不多。
+这个角色主要是为了 conf change 的时候，不用从头追日志，从 learner 到 voter 可以迅速完成角色变更。
+raft 协议里面还有一个叫 witness 的角色，按照原始论文里面的说法，witness 角色是参与投票的，但是不存数据。&lt;/p&gt;&lt;p&gt;tikv 之前实现过一个版本的 witness，并且是按 raft 原始论文来实现，但是实践中证明会有一点问题。
+这个坑就是 witness 存了日志。假设现在我们有三副本，{A=leader B=follower C=witness}。
+A 只要日志收到 majority 回复，它就是成功了。假设 B 的网一直很差，或者由于 B 要处理数据 apply 执行得慢一些，
+很容易就是 A 和 C 一直往前走，而 B 远远落后。这个时候 A 挂掉了。根据 raft 协议，日志最长的会成为新的 leader。
+如果让 witness C 成为了新的 leader，C 上面是没有数据的，它会无法服务！
+如果不让 witness 成为 leader，那么就必须让 B 追上 C 的日志，这个追日志的过程，可能很慢，这个日志落后多少甚至是无上界的。
+真实的场景中，这会造成不可用。&lt;/p&gt;&lt;p&gt;我就发现，不管怎么样，都很绕。raft 实现 2F1A 好像很难搞！那为什么 oceanbase 据说是实现了 2F1A 的呢？&lt;/p&gt;&lt;p&gt;答案藏在 raft 和 paxos 的差异里！&lt;/p&gt;&lt;p&gt;&lt;strong&gt;oceanbase 的 election 和 commit 可以用不同数量的 replicas&lt;/strong&gt;！在正常 2F1A 时，OB 它是 commit 维护 2 replicas 的 group，而 election 维护 3 replicas 的 group。
+1A 它属于 election group，但是不属于 commit group。于是可以 2 份数据。
+出现 conf change 降级的时候，election 由 1A 和另一个活着的 peer 可以达成 majority。
+降级后，维护 1 replicas 的 commit group，而 election 是 1A+1voter 的 2 replicas group。&lt;/p&gt;&lt;p&gt;raft 的 leader 选主，以及 log 都是属于协议本身的，一旦形成 group，就要么固定 3 副本，要么固定 2 副本。
+3 副本的时候，无论是 witness 还是什么角色，都得维护 log，维护 log 就得追 log。维护 log 是保护 raft 协议正确性的要求。
+2 副本，这就导致一旦要 conf change，就涉及重新选举没法 majority，这个就不在 raft 协议层内，而需要外部 hack。&lt;/p&gt;&lt;p&gt;如果在 2 副本加外部 arbiter，那这个 arbiter 就不属于协议内部，这就好比那种主备高可用的外挂一个共识服务，
+无轮是 lease 或者检测不可用都变复杂，时间太短会误判，而时间太长则不可用的恢复时间增加。本质都是因为 arbiter 不属于 raft 协议内部的成员。&lt;/p&gt;&lt;p&gt;研究了许久之后，终于在 etcd 的一个 &lt;a href=&quot;https://github.com/etcd-io/etcd/issues/8934#issuecomment-398175955&quot;&gt;issue comment&lt;/a&gt; 里面看到一个非常精彩的回复：&lt;/p&gt;&lt;blockquote&gt;&lt;p&gt;To the best of my knowledge, witnesses cannot be used with Raft because Raft requires that replicas maintain a complete prefix of the log. This prevents a replica that does not have the latest log entries from becoming leader, breaking fault tolerance if witnesses are used. A Paxos-based system could elect a node that is behind as leader, and have the new leader obtain the missing log entries by running Prepare-Accept logic, bringing it up-to-date.&lt;/p&gt;&lt;/blockquote&gt;&lt;p&gt;顺藤摸瓜地，我找到了答案，&lt;a href=&quot;https://github.com/etcd-io/raft/issues/133&quot;&gt;Extended Raft&lt;/a&gt;！&lt;/p&gt;&lt;p&gt;就是 raft 原始论文里面的那个 witness 实现方式，不能够很好的解决 2F1A 的问题。
+解决这个问题需要扩展 raft 协议。&lt;/p&gt;&lt;p&gt;extended raft 里面引入了 witness 角色，然后极具创新地引入 replication set 的概念。
+传统的 raft 里面，有 membership 的概念， {A, B, witness} 这个是一个 raft group 的 membership，这个是不变的。&lt;/p&gt;&lt;p&gt;leader 的 replication set 是可变的。正常态，replicationSet = {A, B}，leader A 向 B 复制日志，majority{A B} = 2。witness 不参与。&lt;/p&gt;&lt;p&gt;当 B 故障时，leader 调整复制集，replicationSet = {A, witness}，majority 还是 2 的，B 不在复制集中，不参与。&lt;/p&gt;&lt;p&gt;成员始终是 3 个，但是通过动态调整 replication set，让 majority 总是可用。&lt;/p&gt;&lt;p&gt;引入 replication set 之后，就额外引入了一个 subterm 的概念。原本的集群变更，每一任 leader 会有 term。然后日志会有 index。
+现在每一轮 replication set 的调整，会让 subterm 加1 以区别。日志的标识变成了 (index term subterm)&lt;/p&gt;&lt;p&gt;witness 里面是完全不用存日志的，它只需要知道 leader 的复制集的状态。subterm 让 witness 能用最小的信息量判断 &amp;quot;日志新旧&amp;quot; 和 &amp;quot;谁是合法 leader&amp;quot;。&lt;/p&gt;&lt;p&gt;算法描述可以去看原论文，这里不展开了。结论这个确实是一个不错的两节点高可用强一致的方案，可以让 raft 协议下实现 2F1A。&lt;/p&gt;</content></entry><entry><title>让 AI vibe 了一个 actor 模型的语言</title><link href="https://tiancaiamao.github.io/tiny-actor.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tiny-actor.md</id><updated>2026-06-21T17:51:42Z</updated><content type="html">&lt;p&gt;当前的 AI 太强大了，新弄一门编程语言的门槛被压得特别低。以前好几个周末的东西，现在几个小时一天内就完成，能覆盖的内容还更多。
+弄一个 toy language 也越是没意义。如果纯手写的时候，还能学点东西。现在 AI 写，连学习的作用都没了。
+也是因为成本够低，瞎尝试也是无所谓。&lt;/p&gt;&lt;p&gt;由于代码不是亲手写的，所以不聊一行代码。聊聊设计，设计还是&amp;quot;古法&amp;quot;做的，AI 的含量低。&lt;/p&gt;&lt;p&gt;首先是我需要一门什么样的语言？也就是聊需求，聊语言的定位。我期望一门啥都能的语言，那基本上表示基本上就是世界上最垃圾的语言。&lt;/p&gt;&lt;p&gt;如果我要极致的性能，像 C C++ 这些，或者 zig odin rust 这些都是候选。但是垃圾回收就被排除在外了。如果我希望心智负担低，那垃圾回收是挺好的。&lt;/p&gt;&lt;p&gt;如果我希望语言对并发的支持很好，Go Erlang 这些就很不错。&lt;/p&gt;&lt;p&gt;如果我希望语言安全，那么类型系统就很重要，动态脚本语言则不太适合。&lt;/p&gt;&lt;p&gt;如果按语言的能力圈来排，最符合我的口味的，无疑是 Go。编译到 native，性能绝大部分场景足够。支持垃圾回收，类 C 的语法，心智负担低。对于并发编程友好。
+但是如果我们把语言不限定成一门呢？如果我们可以底层是 C，上层搭配一个脚本语言，也能取得一个比较好的平衡。像 lua 这类虚拟机语言也是能满足许多应用场景的。&lt;/p&gt;&lt;p&gt;所以这种情况下，也没必要奔着极致的性能走。把任何一个方向，往极端上面走，语言会很有特色，但是难度都会上升很快。玩具嘛，就应该最低成本投入，足够好玩。&lt;/p&gt;&lt;p&gt;所以 tiny actor 大致的定位，就是用字节码虚拟机实现，一个简单的高层语言，不往性能方向做追求。&lt;/p&gt;&lt;p&gt;其实我之前还尝试过另一个版本的事情，是给 cora 语言做 AOT。不是编译成 C，而直接让 AI 帮我直接实现一版编译到汇编，再到 native。
+AI 确实是非常强大的，直接编译到 native 而不是编译到 C，能够给 cora 带来一定的性能提升。背后的原因是，我当前是把 C 当成目标指令来用的，
+实际上内部为了适配 GC 和 coroutine 等等东西，是有一套内部的 abstract machine。而翻译到的 C 语言只是去把 abstract machine 映射成可实现的东西。
+所以会有不少的性能损失，尤其是为了支持 resumable exception，trampoline 的开销很高。&lt;/p&gt;&lt;p&gt;让 AI 帮我直接 abstract machine 到汇编到 native 的代价是什么呢？可维护性明显不行，AI 生成的代码可以跑但是我不知道它咋跑的。尤其是它的 try throw 那一堆对应的实现，我完全无法信任。
+另外的代码就是跟 C 交互这块，改成 abstract machine 映射到物理指令和寄存器之后，跟 C 的交互就麻烦太多了，需要调用 C 之前先保存寄存器和部分上下文，调用之后再恢复语言使用的那些寄存器约定。
+以前用编译到 C 的方式，约定容易得多，内部的 VM 是可以用 C 结构体定义出来，交互协议也用 C 处理，不涉及具体寄存器。但是修改后就没这个优势了。
+所以那个版本，只是 AI 尝试一下，不可能真的实用。也只能证明这个方向，性能有很多提升空间，代价不可接受。&lt;/p&gt;&lt;p&gt;性能定位确定之后，下一个定位就是，高并发。
+如果只是方便易用的脚本语言，底层是性能拉满的 C，然后良好的交互，这样的定位已经有一个候选了，就是 lua。那么为什么不直接就是 lua 呢？
+相对于 lua，哪些方面可以再提升一些呢？首先一个点是高并发。&lt;/p&gt;&lt;p&gt;lua 一般是游戏里面，嵌入式脚本这样的定位。它是以 C/C++ 这种为主，而以 lua 为辅的。其实我期望换一下位置，以上层语言为主。使用姿势并不是嵌入到 C，而是作为主语言。
+C 去实现基础库和模块，提供与操作系统的交互。要说胶水，C 才是主语言与操作系统之间的胶水层。erlang 的虚拟机，beam 更符合这样的定位。
+不过 beam 已经太复杂了，都是几十年的软件才积累这么多代码量。而我只需要一个玩具 demo，所以不用搞复杂。&lt;/p&gt;&lt;p&gt;高并发实现模式有好多种。Go 那边是 CSP 的，然后 &lt;a href=&quot;/cml-vs-go.md&quot;&gt;CML&lt;/a&gt; 之前已经在 cora 中尝试过了，这次该试试 actor 啦。
+你问 Go 可不可以支持 1M 的 goroutine？ 也是可以的。但是代价是几个 G 的内存。而 cora 那边我也支持过 1M 的 coroutine，也是几个 G 的内存。
+无论是 Go 还是 cora 都给了初始的的栈太多的内存了，初始就 2K+，如果 1M 就直接到 2G 了，这是纯算 heap in use，如果还考虑 runtime 保留，RSS 就更高。
+而且对 GC 是很不友好的。在 Go 里面，GC 本身是支持了多线程，这把 GC 的实现复杂度拉得太高的。&lt;/p&gt;&lt;p&gt;Go 的 GC 需要这么复杂，还有一个因素是它本身是过程式的编程风格，而不是纯函数式。一个 goroutine 还是可以访问到其它 goroutine 的内容，不是纯消息通信这一条路，这就导致 GC 必须是全局的。
+纯函数模型下，没那修改，然后 actor 的邮箱归属也很清晰，就会更简化 GC。&lt;/p&gt;&lt;p&gt;在 cora 里面，我是让 VM 的存在来隔离了复杂度，实际的并发能力移到了更上层构架，让 &lt;a href=&quot;/cora-multicore-support-2.md&quot;&gt;M 个线程驱动 N 个 VM，然后在每个 VM 里面，都可以启动许多的 coroutine 这种形式&lt;/a&gt;。
+在 cora 里面，VM 才是执行的单元，而 coroutine 属于 VM，GC 也是在 VM 级别，让 VM 内的 coroutine 通过分时执行，达到并发的假像。而 VM 之间是可以运行在不同的线程上，于是是并行的。&lt;/p&gt;&lt;p&gt;tiny actor 里面，我决定再试点不一样的。让 GC 不再是 VM 级别的，而是 actor 级别。这样的好处是，每一个 GC 的卡顿，都只卡顿其实一个 actor，而且不是卡顿 VM 中的全部 coroutine。
+粒度划得更细，就可以不增加 GC 实现复杂度(并发，分代) 的前提下，得到更好的实时性。beam 虚拟机就是这样，每个 actor 级别的独立 GC。
+具体还说一点细节，tiny actor 的每个 actor，它的堆和栈，是共用的一块内存，分别是从上往下，从下往上增长。当两者相遇的时候，就会触发 GC。而具体的 GC 算法的实现，选用的 semispace copying 的 GC。
+这样有一个额外的好处，就是每次触发了 GC，可以分配一个更大的内存块。而不是预先分配比较大的。这比 Go 那样初始就 2K 的 goroutine 栈要更廉价，于是可以支撑更多的 actor 数量。&lt;/p&gt;&lt;p&gt;关于 tiny actor 的并发的 runtime，还有一个取舍得提一下。我在思考的时候，大致有三个选择：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;VM 只支持单线程，单线程内可以许多 actor&lt;/li&gt;&lt;li&gt;VM 内支持多线程，但是只有单一 scheduler 和全局消息队列&lt;/li&gt;&lt;li&gt;支持 M:N 调度，抢占式调度&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;第一种就是 lua 风格嘛。好处是易于嵌入，单线程 VM 可以方便控制复杂度。第三种，其实就是 beam 虚拟机了，可以说是一个复杂的巨兽。相对于 Go 的 runtime 的差异，beam 的 GC 会好做很多，
+它不是一个全局的 GC，而是每个 actor 各种 GC。然后 beam 在调度这一块做得比 Go 会好一点，不是协程那种主动让出，而是每个 actor 都会算 tick 后由 scheduler 切走，软实时性更强。&lt;/p&gt;&lt;p&gt;第一种其实也可以上更上层模块，去补并发能力。无论是 cora 那边的实现，还是云风的 skynet 都是在上层去补的并发框架。tiny actor 我最终选定的是第二种，在 VM 内把多线程支持了，而不是在更上层去补足。
+这个选择，用户友好性会更强一些，就是用户不再需要考虑到有线程的存在的，它只知道 actor 的存在，actor 是自动并发了的。为了实现简单，我没有选三，毕竟 skynet 那边也证明了，不搞 beam 那么复杂，其实也够用了。&lt;/p&gt;&lt;p&gt;然后语法的选择。毕竟搞了这么多年的 lisp 对吧，第一版实现还是用的 lisp 语法，编译到虚拟机字节码。完成第一版之后，第二版就开始设计上层语法了，毕竟 lisp 语法是比较反人类的。
+如果不用到宏，完成不必要这么搞。我让 AI 大致参考了一下 &lt;a href=&quot;https://gleam.run/&quot;&gt;gleam 语言&lt;/a&gt;的语法，这也是一个编译到 beam 虚拟机上的语言。风格更加函数式一些，相对 erlang，也比较现代化。
+beam 虚拟机上，除了 erlang，还有一个比较火的是 elixir，elixir 的语法更多 ruby 化一些，然后类型也是后面补上去的。而 gleam 则是从设计开始就更加考虑类型系统。&lt;/p&gt;&lt;p&gt;自举。确定好大致的语法之后，我需要实现自举，tinyactor 缩写就叫 ta 吧。大致的做法是，需要用 ta 实现 parser / compiler 这些，把 ta 可以转成 lisp 的内部 IR。lisp 还是保留了，但是不是对外暴露。
+它只作为内部 IR 的定位，从 ta，经过 IR，然后到 tabc，是最终的字节码。然后字节码加上 C 语言实现的一些基础库，就可以完整执行了。&lt;/p&gt;&lt;p&gt;最后代码没啥可看的，都是 AI 生成的。我把 &lt;a href=&quot;https://github.com/tiancaiamao/tinyactor/blob/98fb5c9f36f7b6331dde0810280fdd137cbae149/design.md&quot;&gt;design&lt;/a&gt; 可以列出来。
+以及这个代码怎么弄出来的可以说一说。&lt;/p&gt;&lt;p&gt;使用的是 pge 这个&lt;a href=&quot;https://github.com/tiancaiamao/ai/blob/e87cd3e62c83751cc962ac3aa19d355936516422/skills/pge/SKILL.md&quot;&gt;技能&lt;/a&gt;，&lt;a href=&quot;/long-run-harness.md&quot;&gt;前面博客其实已经提到过这个技能了&lt;/a&gt;。我跟 AI 讨论一下，把 design 确定之后，喂给它。
+然后就是让 AI 从 spec 开始，自主推进到任务完成。中间基本上不太需要人类介入干嘛，整个干活的过程记录在&lt;a href=&quot;https://github.com/tiancaiamao/tinyactor/blob/98fb5c9f36f7b6331dde0810280fdd137cbae149/.pge/progress.md&quot;&gt;这里&lt;/a&gt;可以看到。
+agent 会自已拆解任务，自己每个任务代理给 subagent 执行，然后会验证，会 review，会提交代码。&lt;/p&gt;&lt;p&gt;只能感叹一下 AI 太强大了。这些原本还有一点点技术含量的活，当下变得一点技术含量都没有了。甚至 AI 把学习的机会和过程，都给抹杀掉了。&lt;/p&gt;</content></entry><entry><title>重构 agent 的上下文管理</title><link href="https://tiancaiamao.github.io/ai-agent-context-management.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/ai-agent-context-management.md</id><updated>2026-06-17T17:20:42Z</updated><content type="html">&lt;p&gt;我自己写了一个 coding agent，目前日常使用都是用的它。
+最近我又打算把上下文管理的实现方式重构了一版，这已经是第三次做大的重构了，
+这篇博客会把每个版本改的啥，以及为什么那样改，记录下来。&lt;/p&gt;&lt;p&gt;其实前面多多少少已经提到过了，&lt;a href=&quot;/what-i-learn-from-writing-coding-agent.md&quot;&gt;最开始&lt;/a&gt;是一个非常基础的版本，
+就是用上下文窗口用满了就 compact。compact 会把最近的若干条消息保留，其它的都 summary。这个做法是版本 0，相当于什么策略优化都没有的版本。&lt;/p&gt;&lt;p&gt;然后是版本 1 的重构。版本 1 的主要思想是&lt;a href=&quot;https://zhuanlan.zhihu.com/p/2010699661242045777&quot;&gt;这个&lt;/a&gt;
+即我想让 agent 自主决定它自己的上下文管理，我只提供它需要的一些指标，由它来决定做什么样的上下文管理操作。&lt;/p&gt;&lt;p&gt;实际实现的时候，我提供了三个工具，分别是 truncate tool output，llm context update，compact。
+truncate 用于把工具的输出裁剪掉，只留下 &lt;code&gt;[xxx chars truncated]&lt;/code&gt; 类似的信息。
+然后 llm context update 是让 agent 把当前的上下文总结到一个文件，这个文件内容会被注入到 context 中。
+具体的格式就有点像 plan 更新，当前任务是什么，已经完成哪些，接下来要做哪些，关键的文件改动，决策等等。
+两者结合，就是一个轻量的上下文管理，不停地把工具输出这种信息密度较低的干掉，而保留总结性的 llm context 文本在上下文中。
+最后 compact 工具就是一个传统的 compact，既用来兜底，也提供给 agent 决策自己去主动调用，比如一个大的 plan 中，刚刚完成了一个 task，就可以先 compact 了再处理下一个。&lt;/p&gt;&lt;p&gt;版本 1 做完，实际使用中就撞了个大墙。主要是指令遵守问题。我在&lt;a href=&quot;/my-harness-engineering.md&quot;&gt;前面文章&lt;/a&gt;中已经描述过了。
+就是我一边要求模型完成它自己的主线任务，另一边又同时要求它自己来管理上下文。这样它的注意力就很分散，心智负担特别重。
+为了让它遵守要求，自主管理上下文，我还在 agent 里面注入奖励惩罚机制，越发加重它的心智负担。&lt;/p&gt;&lt;p&gt;所以版本 2 的大重构，就是把普通模式，和上下文管理模式，完全隔离开了。
+我在普通模式下，使用的就是正常的 system prompt，也不注入任何需要关注的上下文管理的指标，也不提供各种工具了。
+然后普通模式运行一段时间，当 agent 检测到上下文使用比例比如 20% 之后，就开始触发进入上下文管理模式。&lt;/p&gt;&lt;p&gt;只有进入到上下文管理模式之后，LLM 才需要去关注上下文管理的事情，还是使用那些工具，去做决策调用哪些。
+这比同一模式下耦合两件事情，心智负担要小得多。不管是工具，还是 system prompt，都是专门的，提供给这个模式下使用的。&lt;/p&gt;&lt;p&gt;为了让这个 agent 自主管理的效果好，我还专用用 auto research 的方式来打磨过 context management 模式下的工具和 prompt。
+具体做法是，从许多的历史 session 中挑选，专门挑那些比较长的 session，尤其是发生 compact 的时刻的那些。
+挑出来之后，构建测试集，输入就是这样的 session。然后让 agent 决定 context management 下的动作，观察它的行为是否合理。
+评价方式就是用 llm as judger，看它执行 context manage 之前，跟之后，上下文内容对比。看看是否执行之后的，上下文质量更高。&lt;/p&gt;&lt;p&gt;truncate tool output 和 llm context update 是更低风险的操作，而 compact 是更高风险。观察到的一些现象就是，compact 之后崩溃的，丢失了太多信息然后导致任务走偏。
+所以这个打磨过程就是用科学的方式，让 agent 自主上下文管理能够维护最佳的上下文内容。&lt;/p&gt;&lt;p&gt;版本 2 做完之后用了很长时间，基本满意。然后就到了今天的话题，为什么又双叕重构呢？&lt;/p&gt;&lt;p&gt;其实核心的点在于主流 SOTA 模型，上下文从 200K 升到 1M 这个范式变更。
+deepseek v4 出来的时候，国产模型首次支持到 1M 的上下文。然后到 6.15 号，GLM 正式发布了 glm5.2 也开始支持到 1M 上下文。&lt;/p&gt;&lt;p&gt;我之前的专注点一直在于：如何在有限的上下文中，维护尽可能最优质量的内容。
+不管是 truncate 掉低价值的工具输出，还是维护结构体的 llm context 信息，都是这样的方向。
+我可以更频繁地 compact，用 llm context 摘要来精简上下文，只留下任务最重要的信息，以及若干最近消息。&lt;/p&gt;&lt;p&gt;而 1M 上下文之后，这个逻辑完全变化了！尤其是价格模型完全变化了。
+1M 上下文可以维护更多的内容，不用再用得那么扣扣搜搜的，与其追求更好的上下文质量，不如追求更高的缓存命中。
+以 deepseek v4 为例，flash 的缓存命中，和不命中，价格差距是 50 倍。而对于 pro，更是命中和不命中相差了 120 倍！&lt;/p&gt;&lt;p&gt;而之前无论版本 1 不是版本 2，都不算缓存友好的。
+我明显能感受到版本 2 中那些不好的点，比如 truncate tool output 这个工具，如果我们把比较早期的内容 truncate 掉之后，从那个前缀开始，就是全部缓存未命中的。
+所以这种 truncate 历史消息特别不缓存友好。&lt;/p&gt;&lt;p&gt;llm context update 这个取决于我们把 llm context 文本注入的位置，如果总是保持注入到最近一轮 user 消息的前面，然后 agent 做了特别多的活，比如好多轮的工具调用，
+然后 user 再发一条消息，那 llm context 的注入位置就变化了，缓存前缀失效！&lt;/p&gt;&lt;p&gt;我在版本 2 里面把普通模式和 context management 模式彻底隔离，这也是一个很不缓存友好的行为。我不仅是两个模式下使用了完全不一样的 system prompt 和工具，并且还有一些特殊操作。
+我要把普通模式的内容提取出来，对第个 tool call 注入一个编号，然后成为新的 context management 模式下的消息。
+之前这么做的原因是，truncate tool output 需要有 tool call 的 id，才能知道 truncate 哪一条。我是把这个决策权给到 LLM 自主决策的。
+但是按照正常的 openai 或者 anthropic API，LLM 其实它是拿不到 tool call id 的信息的，所以我要把内容改写成 &amp;quot;[tool call id: xxx] 原始内容&amp;quot; 再发给 LLM。&lt;/p&gt;&lt;p&gt;这就导致每次进入 context managent 模式，完全是全新的内容，缓存用不上需要重建。这个操作就很慢，明显慢于普通的 user prompt 操作。
+还有更不爽的是，有可能进入 context management 后，LLM 给的决策是 do nothing! 因为 LLM 自主决策，当它认为当前上下文不需要调整，质量足够好，它就保持不操作。
+这完全亏了，进入 context management 模式的代价那么高，却啥也不做。&lt;/p&gt;&lt;p&gt;还有就是触发进入 context management 模式的初始值。在 200K 上下文的时候，我设置的是 20% 开始触发。即 20% 以下，也就是 40K 以内上下文使用，完全不用管。
+上下文使用率再往上去，使用率越高，会越频繁进入 context management 模式。比如达到 20% / 33% / 50% 使用率之后，我会每隔 15 / 10 / 7 次的 tool call，就进入到 context management 模式。
+这些数值是我在 200K 使用和 tuning 感受下来的，而到了 1M 之后，20% 才进入，已经太晚了。然后进入之后，上下文已经很长，进入 context management 模式的代价很高。&lt;/p&gt;&lt;p&gt;我之前&lt;a href=&quot;/deepseek-first-impression.md&quot;&gt;测试 deepseek&lt;/a&gt; 的时候，就已经意识到缓存命中这些问题了。没有急于修改的原因是 GLM 用的 coding plan 嘛，白嫖 API，反正也不是 token plan 计价格式。
+缓存命中不命中，无所谓的。但是现在不一样了，GLM 也支持到 1M 的上下文了。这意味着我的 agent 也必须跟着调整了。&lt;/p&gt;&lt;p&gt;当前叫版本 3 吧。版本 3 的思路，主要几个考量的点：&lt;/p&gt;&lt;ol&gt;&lt;li&gt;必须考虑缓存友好性&lt;/li&gt;&lt;li&gt;最优性价比，而不是在有限上下文长度的最佳质量&lt;/li&gt;&lt;/ol&gt;&lt;p&gt;缓存友好性，就意味着，任何已经发送给 LLM 过的历史内容，就尽可能不要改了。即使改，也是尽量只改动到最近的消息内容，这样前缀缓存还能保住。
+那么前面版本 2 里面的 truncate tool output 最好就不要了，llm context 也尽量不要是文件注入了。&lt;/p&gt;&lt;p&gt;但是并不意味着一味追求缓存友好是最佳选择。如果一味追求缓存友好，那么做法最佳是版本 0，什么都不做，当上下文要爆了，才去 compact 一下。
+有一个开源的 deepseek-reasonix 的项目，卖点追求的就是缓存命中率，但是一味追求这个点就是错的。为什么是错的？&lt;/p&gt;&lt;ul&gt;&lt;li&gt;第一，当上下文没满的时候，其实已经衰退得厉害了。不要听信模型说支持 1M 就真的可以长上下文运行，质量下降得厉害。所以上下文的质量一定是考虑因素。&lt;/li&gt;&lt;li&gt;第二，假设我们一直不做 compact 也不做任何上下文管理操作。那么，前面有 1 条消息的时候，再发一条新消息，token 缓存 1/2 等于命中率 50%。等 9 条消息的时候，再发一条消息，前 9 条都命中缓存，
+这时缓存命中率就到了 90%...越往后，缓存命中率是越高的，也就是一味堆积上下文，啥都不做的情况缓存命中率最高&lt;/li&gt;&lt;li&gt;第三，缓存命中，只表示成本低，但是也是有成本的。假设我们有 50 条消息，假设命中和不命中的价格是 50 倍。那么，我们不 compact 的情况，下一轮的价格是 50命中+1不命中。如果 compact 呢？变成两条不命中，价格一样等于 2不命中。但是下下轮呢，未来n轮呢？&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;采取 compact 的时候，后面轮次的成本就变成了 2命中+1不命中，而不 compact 则是 51命中+1不命中。经过几轮之后，compact 是会回本的！虽然 compact 的那一轮不命中，但是后面轮大大减少了上下文的 token 量。&lt;/p&gt;&lt;p&gt;这里最好是能预测，当前的上下文，未来还要经历多少轮次，才能计算最佳的性价比。单纯只算缓存命中，其实不是最优的。
+当然，这个事情并不容易预测。所以我还是给 LLM 自主决定 context management 的触发。&lt;/p&gt;&lt;p&gt;最终版本 3 我的想法是，用 handoff 的方式实现上下文管理。可以把它想象成，有两个 agent，主 agent 把根据自己的 session 当前信息，写一个 handoff.md 文件，然后让子 agent 加载这个 handoff 文件。
+如果只是这一步，就跟 compact 没有太大的本质区别。最最核心的点在于：我会留一个 QA 过程。让子 agent 看完 handoff 文件之后，如果有不清晰的，它可以向主 agent 提问！等 QA 环节完成之后，才算上下文管理完成。
+这跟传统的 compact 最大的区别，就是在于崩溃恢复的韧性。compact 是一个不可逆的过程，是很容易搞崩上下文的，而在 handoff 模式下，有一个交接的过程，这会让质量提高不少。&lt;/p&gt;&lt;p&gt;这个版本的上下文管理，就是一个把 handoff 做成自动化的实现。fork resume rewind 这些还是要支持，不过这些都是实现细节了。&lt;/p&gt;</content></entry><entry><title>TiDB code RAG</title><link href="https://tiancaiamao.github.io/tidb-code-rag.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tidb-code-rag.md</id><updated>2026-06-03T19:49:42Z</updated><content type="html">&lt;p&gt;刚开了一个新的 &lt;a href=&quot;https://github.com/tiancaiamao/tidb-code-RAG&quot;&gt;repo&lt;/a&gt;，搞了一个 tidb 的 RAG。&lt;/p&gt;&lt;p&gt;这个背景是这样的，当我们处理很大的项目的时候，coding agent 能否更好的理解项目，理解上下文和一些 feature 之间的关联，
+以及可能有一些隐式的约束存在。人类写代码的时候，或者说 TiDB 资深的工程师写代码的时候，脑中大概是有一些更 high level 的知识的。而 agent 写代码的时候，
+尤其是项目规律很大很复杂之后，容易只顾局部。所以想法就是，能不能 RAG 一下，给 coding agent 能提供更好的背景知识。&lt;/p&gt;&lt;p&gt;首先想到的就是卡帕西那个 auto wiki 类似的东西。我可以给 tidb 的代码，建立一个 wiki 起来。随着代码的变更，可以让 agent 维护这个 wiki 的变化。agent 作为 wiki 的编译器。&lt;/p&gt;&lt;p&gt;说到代码仓库的 wiki，网上类似的东西就有 &lt;a href=&quot;https://deepwiki.com/pingcap/tidb&quot;&gt;deepwiki&lt;/a&gt; 和 google 最近出的 &lt;a href=&quot;https://codewiki.google/github.com/pingcap/tidb&quot;&gt;codewiki&lt;/a&gt;。
+只不过那边是在线服务，而我弄的是本地版本的一个 wiki。&lt;/p&gt;&lt;p&gt;在线版的 wiki 服务也还挺好用的，有时候我要去理解一个项目，直接去看 wiki，然后提问，就可以快速地掌握整个项目的脉络，比上古时代啃代码的方式要高效得多。
+有时候我 clone 一个其它项目下来，让 agent 去分析代码的时候，会让 agent 先从这类的 wiki 服务抓取一个 overview，这比 agent 直接探索整个项目会节省 token 一些。
+就相当于 codex 或者 claude code 中执行 /init 的过程。&lt;/p&gt;&lt;p&gt;那它跟直接在项目中写个 AGENTS.md 有啥差别呢？如果项目中创建过样的文件，然后也记录了仓库的整体的索引信息，那 coding agent 是不是也会得到同样的上下文？&lt;/p&gt;&lt;p&gt;还是有一些差异的。首先是会更省 token。如果 coding agent 加载 AGENTS.md 之后，继续把需要的内容一点一点加载进来，
+这个来来回回的过程会更耗 token 一些。而我这边设计成一个冻结的 session，以 snapshot 的形态来提供服务。
+也就是有一个子 agent 是直接从 session 中恢复出来，形成提供 RAG 服务的 agent。这个过程就不涉及多次加载文档形成 snapshot 的过程，
+启动即包含全部的内容。&lt;/p&gt;&lt;p&gt;相当于是三层：source code -&amp;gt; wiki -&amp;gt; context。先是源代码，这是在外存的。然后由代码生成出来的 wiki，这些文件就放在这个 repo 里面了。
+使用的时候，直接从加载好全部 wiki 文件的 session 中恢复出来，就是一个直接可用的上下文。&lt;/p&gt;&lt;p&gt;然后还有一个差异是 coding agent 和 RAG agent 隔离。如果我们要加载很多很多的 wiki 的内容，以便 coding agent 掌握更多上下文，
+这确实也可以，但是信息多不代表最有效。我们需要在有限的 coding agent 的 context 中放置最有价值的信息。
+如果 AGENTS.md 那边要加载特别多的内容，还不如让一个专门做 RAG 的 agent，来告诉 coding agent 它需要的内容。
+由于 RAG agent 和 coding agent 分离了，在 RAG agent 的上下文中，可以塞尽量多的跟 wiki 相关的内容，
+而 coding agent 那边，则只向 RAG agent 去查询它所需要的内容。&lt;/p&gt;&lt;p&gt;怎么构建？我分两条线让 agent 去 explore 整个 tidb 的代码仓库。主线是围绕整体的 archtecture 和各个子模块。
+然后辅线是各个 feature 相关的内容。除了代码仓库，我还让 agent 把文档相关的也全部读了一遍，然后更新上一轮生成的 wiki。
+这样这些 wiki 文件内容就构建好了。&lt;/p&gt;&lt;p&gt;然后就是 system prompt 以及用于加载的提示词，把构建好的 wiki 文件变成一个 session 的 snapshot。这样下次就不用重头构造，而是直接恢复 snapshot。&lt;/p&gt;&lt;p&gt;怎么维护呢？预期我会隔一阵子，来看一下它跟上次的 wiki 对应的 tidb commit 发生了哪些变化，然后根据变化的代码来更新 wiki 的内容。
+一般来说，底层代码变化快，而架构和 feature 这些更高层的内容则更新不那么频繁，所以这里应该不会涉及信息很快过时的问题。
+还有一个想法是，这个 repo 能把人类的知识也整合进去，希望会有一些手动的更新，把我自己给蒸溜了。&lt;/p&gt;&lt;p&gt;怎么使用？大概有这几种吧，一个是我自己把它当本地 wiki 一样用，就像问 deepwiki 那种，去提问来了解一些东西。
+这比我直接读代码找答案会方便。&lt;/p&gt;&lt;p&gt;还有就是准备一个技能，这个技能就可以告诉 coding agent 怎么使用这个 tidb code RAG。它可以向 RAG 的 agent 提问，来了解它想知道的内容。
+又或者，coding agent 要做一个什么任务，它可以让 RAG agent 给它提供这个任务所需要的上下文信息一次提供好，也是 RAG 的效果。&lt;/p&gt;&lt;p&gt;当前只是针对 TiDB 做的，但是方法和思路其实并不限于 TiDB 的 repo。
+任何其它的 repo 都可以帮到类似的方法。不过那就是更通用的 deepwiki 了。&lt;/p&gt;</content></entry><entry><title>long run harness 探索</title><link href="https://tiancaiamao.github.io/long-run-harness.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/long-run-harness.md</id><updated>2026-05-25T12:17:42Z</updated><content type="html">&lt;p&gt;前不久很火的一个事件是 bun 由 ai 用 rust 整个重写。bun 其实算是一个挺大的项目了。
+大家讨论的点主要集中在，这个 ai 重写出来的东西是否可行，跑出来质量是否可靠。
+我关注的点其实不太一样，我思考的是，这种规模的项目，既然 anthropic 那边能重写出来，那么我能不能？&lt;/p&gt;&lt;p&gt;历史上这种新闻还包括编译器重写，浏览器重写等等。虽然前面都是 demo，玩具上不了生产的，只为验证 ai 的能力上限如何，或者说 ai 替代程序员的想象空间有多大，但是这些重写基本上都是由大公司搞出来的。
+模型训练是挺烧钱的一个事情，个人不一定有财力参与。重写大型项目这种事情却是个人也能探索的，毕竟烧 token 这件事情可控，烧不起了停下来就行。&lt;/p&gt;&lt;p&gt;先说结论：anthropic 能重写的大型项目，个人不一定能重写出来。受到什么条件限制呢，这就是今天的主题，long run harness。&lt;/p&gt;&lt;p&gt;这种规模的重写有什么难度，有人可能说，不就是 plan mode 就行了？实际试过就知道，plan mode 远远不够。&lt;/p&gt;&lt;p&gt;我最早的 long run harness 探索就是从 plan mode 开始的。claude code 早期的 plan mode 老实说做得不咋好，最近怎么样我没去验证了，主力编码已换成我自己的 agent 了。2025 年底那个阶段，kiro 的 plan mode 是明显领先 claude code，走在更前面的。
+后来又关注到许多的开源项目，superpower，speckit，GSD 等等现在这些大家都耳熟能详的明星项目。然后我主要参考了 speckit，适配之后拿到我自己的 agent 中使用。单 agent 架构，那个阶段我主要是在打磨单 agent 稳定性，或者说在 context engineering 那块下功夫。&lt;/p&gt;&lt;p&gt;单 agent 的 speckit 在使用中，很好的一个点是它至少稳定朝目标在推进了，而不是混乱状态做到哪忘记做了啥。很关键的一个点就是在于 plan 的指引下，状态都外部存储了，即使发生了 compaction，读取 plan 相关的文件也会再次召回状态到上下文。
+但是明显感受到的问题有几个：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;模型到后期上下文大了之后，倾向于偷懒，急于完成目标，跳过任务&lt;/li&gt;&lt;li&gt;指令遵守差，到后期忘记去更新 tasks 进度&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;这两个其实都算一种问题，就是 skill 里面要求的内容，到后面模型就不去遵守了。
+到这个阶段，我部分地接受了 langgraph 流派的思想。这一派的核心点就是说，模型的能力是有限的，它们不擅长去做 workflow 的事情，通过文本以技能形式来驱动这些 workflow 是不可靠的。
+解决思路是流程+门禁，以固定代码驱动的状态流转换作为主导，而 agent 只负责去填空的地位。&lt;/p&gt;&lt;p&gt;所以这之后我又转向以 workflow 去驱动，也参考了一些 GSD 的做法。对于不同的任务做了各种模板，比如 feature 开发是一套 workflow，然后 bug fix 是一套 workflow 等等。使用最多的场景还是 feature 开发。
+其中一个小插曲是，GSD 是大而全的框架，而在我这边，我发现这种框架类型缺乏&lt;strong&gt;灵活性&lt;/strong&gt;。它一定是通过某个技能，生成出结果，再到下一个流程。就不适合单个技能独立拿出来用。&lt;/p&gt;&lt;p&gt;举个例子，它一定要生成 spec 出来，或者一定生成 plan 出来，而技能还会约定生成的文档格式。那我想跳过某个流程，直接后面流程行不行？比如我是用 brainstorm 出一个设计，还是直接让 agent 随便先写一个设计，然后我去 grill-me?
+越是复杂框架，就越缺乏这种更灵活的可组合性。所以后来我就拆了，不把若干小技能流程化到一个 /feature 入口，而是自己手动组合小技能。反正 speckit 的思想学到了，应用起来就是随心所欲。&lt;/p&gt;&lt;p&gt;长的 workflow 流程，还导致的另一个后果是，越处于流程后期的技能，越是缺乏单独的测试，这就很成问题。比如正在 feature 过程中，但是技能给了错的指引，这时是停下来 debug 技能还是怎么办？停下来 debug 技能，就污染上下文了，feature 主任务就分叉。
+不去 debug，整个流程又走不成功，很尴尬。而且技能修改之后，它是否能正确，又要等下次的 feature develop 才能验证，而每次可能都不是好重复实现的。这个打磨过程特别不爽。&lt;/p&gt;&lt;p&gt;由于之前吃过 skill 写的 workflow 的亏，这个阶段 workflow 的实现，我以代码驱动状态转换为主层。都变成由 skill 说调用某些脚本或命令，而命令才能去更新真正的流程状态。这也是一个跟模型斗智斗勇的过程。
+比如说我只有 cli 命令调用，才能开工。结果模型它自己去调用命令去更新去了... 于是我在技能那边就要再加上，&amp;quot;只有得到用户确认才能进行下一步&amp;quot;，然后在 cli 命令那边加参数：&amp;quot;--user-input&amp;quot;，必须提供用户输入了啥代表的确认。
+这些门禁都要加上，才能让模型更不容易作弊，而是按确定的流程来执行。&lt;/p&gt;&lt;p&gt;我把这一套做得越来越复杂，每吃过一次亏我就加一点东西，给模型定的约束越来越强。期望它越来越按指令约束来执行，不给它自我发挥空间。
+在 design 拆分成 tasks 阶段，我就引入了多轮的复杂 review。因为从 design.md 拆出来的 tasks 不一定合法。我会做 work-judge loop，也就是多轮的 review。主 agent 切分好任务之后，会交给一个新的子 agent 来审核任务，
+看任务切分得好不好，是否能一个不带上下文的 agent 是可执行的。这会进行好几轮，直到 tasks 切分是很好的。&lt;/p&gt;&lt;p&gt;我还会限制 tasks 的格式。光这一块就是尝试了给 markdown 格式，给 yaml 格式，全部 tasks 单文件描述，拆每个 task 一个文件描述等等。&lt;/p&gt;&lt;p&gt;事实证明 yaml 是这个场景特别扯淡的格式。模型很容易会出现缩进问题。我在生成 tasks.yaml 之后会用脚本来检查格式，然后导入任务。到格式检查这一步，失败率特别高，不是那种由于任务切分好不好，而失败。它就是纯粹的缩进问题导致失败。&lt;/p&gt;&lt;p&gt;但这是前期投入，这个过程是不 scale 的。
+比如我希望它 long run 4 个小时，那我前期投 30 分钟进去。我期望它 long run 8 个小时，前面我投 2 个小时进去...但是越大的任务，越是无法提前把细节拆分好！&lt;/p&gt;&lt;p&gt;我一般喜欢用三个 case。&lt;/p&gt;&lt;p&gt;第一个 case 很简单，写一个 lisp 方言的 meta evaluator，成功标准就是可以用这个 lisp 方言，自己写出自己来，能自举。这个 case 甚至不用 plan mode，也都能够做。无非是做出来的质量高一些或者低一些。
+本质上不够 long run harness。但是这个 case 有一个好的地方：它可以用来打磨 workflow 的技能流水线。
+一步一步跟着指引做，暴露 workflow 的 skill 写得哪些地方有问题。更大的 case 去做为 workflow 技能本身的测试，烧得 token 更多。
+而这个 case 规模正好是作为一个很适合验证技能是否写好的 case。&lt;/p&gt;&lt;p&gt;第二个 case 略复杂些，就是让 agent 把我自己当前的这个 agent 项目重写掉。这个规模已经需要 long run harness 的能力了。我之前写了五六次，都没能成功，项目规模大概快 6w 行 Go 代码了。
+这个 case 的成功标准是，重写出来的新 agent 能够拿来日常使用。不要求它能原样完全还原，因为很多细节需要长时间的使用的打磨，但是要求是写出来的东西至少能用。
+验收标准里面就需要有怎么样做测试，尤其是 e2e 测试来验证功能可用。&lt;/p&gt;&lt;p&gt;第三个 case 最复杂，是重写这个&lt;a href=&quot;https://github.com/opendarkeden/client&quot;&gt;项目&lt;/a&gt;。这是一个大几十万行的 C++ 大型游戏。成功标准是真正写出来一个能玩，能跟原始的 server 对接的游戏客户端。
+之前我只实现了重构它的编译系统，以及用 SDL 替换掉它原始的 DirectX 底层引擎。老实说，那些过程都不叫 long run harness，因为达成目标是投入了大量的人类引导的精力。&lt;/p&gt;&lt;p&gt;对于第二个 case 的复杂度，还勉强可以用 speckit 的方式，去跟 agent 对需求，review 设计，把 task 拆细，用 workflow 模式来做。到了第三个 case 的规模，提前拆到一个一个 task 粒度，完全是不现实的了。
+只能够分好多个 milestone，而每个 milestone 都需要人类参与，去定一个 milestone 的目标，设计和拆解任务。这需要特别多的人力投入，已经不算是 long run harness 了。&lt;/p&gt;&lt;p&gt;从 speckit 到 workflow，从最初的 speckit 单 agent，到后面 workflow 用状态流变换及多 agent，都不行！workflow 模式的根本困境是：流程越严谨越不灵活，越灵活越不可靠。于是我继续下一阶段的探索。&lt;/p&gt;&lt;p&gt;2025 年三月的时候，无意中看到了有几家公司的做法。可以把这个总结成 planner generator evaluator 三 agent 模式。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;planner 是主 agent，也就是 orchestrator 的定位，负责跟人类交互和规划，理解需求，拆解任务。但是它自身是不直接执行任务的&lt;/li&gt;&lt;li&gt;generator 是真正的执行层，每个拆解出来任务由 planner 给到 generator 执行，每个任务都可以是独立的 generator agent&lt;/li&gt;&lt;li&gt;evaluator 是验收的 agent，因为 generator 自己说自己完成，是不行的。必须由干净的新 agent 来评判&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;generator + evaluator 就是一个小的 ralph loop 的循环，planner 则盯着宏观目标的推进。这三个 agent 协作来完成真正的 long run harness。&lt;/p&gt;&lt;p&gt;这个模式比我之前的 workflow 的设计好的地方，一个是它的任务是动态拆的。而我之前的 workflow 是 design 转 tasks，静态全量生成，并且还需要生成依赖关系。这在项目巨大之后，根本就不现实。
+而 PGE 模式下，大的 milestone 可以拆，小的 tasks 也可以拆，这都是可以 planner 动态决定的。相当于有一个专门生成任务的 agent，和后面具体执行任务的 agent，可以用一个消息队列来解耦合了。&lt;/p&gt;&lt;p&gt;还有一个好的地方是，它的自愈性更强。之前用 workflow 代码驱动的场景，任务失败或者脚本 bug 的情况自愈是很难的。而这边，最坏的情况无非是一个任务本来应该由 generator 执行，由 evaluator 来验收，
+而由于任务失败或者状态问题，退化成了 planner 自己来执行任务或者校验了。这不好，但是它至少能 work，能自愈。&lt;/p&gt;&lt;p&gt;我还感知到一个关于 long run harness 核心的点，就是可测试验证。只要想办法把 spec 变成可测试验证，design 做得好不好，重要性就下降了。就相当于定好宏观目标，给 agent 去微操，通过试错烧 token，大力出奇迹。
+只不过这个在实践中，也是观察到，越做到后期，agent 越是每一个 phase 设计得越来越短，越来越不干活。就跟人类推进项目很像，前 20% 的时间推进了 80% 的进度，后面 80% 的时候推进那剩下的 20%，越推越推不动。&lt;/p&gt;&lt;p&gt;那个大型游戏项目的重写还是没写出来。但是至少算是更近一步吧，这些就是我在 long run harness 的一些探索。&lt;/p&gt;&lt;p&gt;回到开头的问题：个人能不能复现大公司的大型重写？答案是，目前还做不到完全自主的 long run，但 PGE 模式至少让 case 2 这个量级的项目变得可尝试了。每一步探索都在缩小差距，只是这个差距比想象中大。&lt;/p&gt;</content></entry><entry><title>deepseek 使用初印象</title><link href="https://tiancaiamao.github.io/deepseek-first-impression.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/deepseek-first-impression.md</id><updated>2026-05-12T09:56:42Z</updated><content type="html">&lt;p&gt;以前抢 coding plan 的时候，我就在调侃，这些服务提供商动不动就不可用，各种限流，429 报错，然后就这还是需要抢的...等 deepseek 赶紧出来教育市场。&lt;/p&gt;&lt;p&gt;前阵子 deepseek v4 真的出了哈，结果我都没第一时间跟进。因为手头上已经有正在用着 glm 的 pro + codex plus 组合，然后现在这阵的 glm 遇到服务不可用已经少了太多，所以没有太强烈的切换的驱动力。
+这么迟才来试一试 deepseek。为了信仰，充值了 10 块钱(笑死)。&lt;/p&gt;&lt;p&gt;题外话，glm 背刺老用户这个点，还是挺不爽的。我从 4.7 时代就开始用着了，老套餐的 pro 用量还是给得非常可以的，200 档而不是像现在 150 （折后 130 这种）。
+新套餐据说是严重缩水的，而老套餐已经不让再续费了。如果 deeepseek 性价比更高，套餐到期了就准备切换！&lt;/p&gt;&lt;p&gt;(证明我不是键盘侠)
+&lt;img src=&quot;/static/zai-token.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;还是用的我自己写的 agent，对接很顺利，改改配置就接上了，只遇到了一个报错是 &amp;quot;reasoning_content must be passed back to the API&amp;quot;。这是一个行为差异，zai 那边是没有强制要求这个的，也很简单修复掉了。&lt;/p&gt;&lt;p&gt;先验证对接完的功能可用性，我跑了之前的那个&lt;a href=&quot;/an-ai-debug-story.md&quot;&gt;画金门大桥的测试&lt;/a&gt;，deepseek flash 一次成功，效果上比 glm5 弱了一点，但是比 minimax 体感好，至少是一次就出来了。&lt;/p&gt;&lt;p&gt;测试 case 是使用的我的 agent repo 里面的 &lt;a href=&quot;https://github.com/tiancaiamao/ai/tree/31a4d82fbe54850ce101a8e3e25e5688c1d87544/benchmark&quot;&gt;benchmark&lt;/a&gt;。 case 基本上是 terminal benchmark 中挑选的，以及自己加的一些。
+关于 benchmark 这种，网上的官方结果都不太可信，只有自己验证出来的信息才更可靠。&lt;/p&gt;&lt;p&gt;基本上我每天会在睡觉前，跑一轮的我的 agent 的 benchmark，第二天早来起来，确认下是否有 regression，让 agent 分析一下 session 找找我的 agent 实现有没有可优化的空间之类的。
+这个事情挺浪费 token 的，大概一轮要 4-6 小时才跑完，如果遇到服务不可用导致各种中断，case 的失败率还会上升，所以结果也没有官方那种稳定，有时候第二天早上起来还没跑完的。
+反正 coding plan 里面的 token 不用也是浪费，这是一个很好的“浪费” token 的场景。&lt;/p&gt;&lt;p&gt;题外话，如果公司把 token 使用作为拥抱 AI 的指标，这种我是完全不认可的。token 很好烧的，但是关键得看烧出来产生了多少价值。现阶段的 agent，在 demo 阶段很好用，但是在烧 token 到产品转化这一块，离开人的参与是很难实际产出的。&lt;/p&gt;&lt;p&gt;模型用的是 deepseek v4 flash，没有用 pro 是因为我得先试试水看看价格消耗。
+跑完测试的 ai 结果对比分析我贴过来：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;### 📊 总览
+
+| 指标 | Current (5/8) | New (5/12) | 变化 |
+|---|---|---|---|
+| **Pass Rate** | 64.86% (24/37) | 62.16% (23/37) | 🔴 **-2.7%** |
+| **Functional Pass Rate** | 81.08% (30/37) | 78.38% (29/37) | 🔴 **-2.7%** |
+| **Avg Agentic Score** | 92.17 | 88.26 | 🔴 **-3.91** |
+
+### ✅ 进步的任务 (+4)
+
+| 任务 | 旧状态 | 新状态 | Score 变化 |
+|---|---|---|---|
+| **#6** | ❌ fail | ✅ pass | 52 → **95** (+43) |
+| **#7** | ❌ fail | ✅ pass | 55 → **65** (+10) |
+| **#14** | ❌ fail | ✅ pass | 60 → **84** (+24) |
+| **#26** | ❌ fail | ✅ pass | 100 → 100 |
+
+### 🔴 退步的任务 (-5)
+
+| 任务 | 旧状态 | 新状态 | Score 变化 |
+|---|---|---|---|
+| **#9** | ✅ pass | ❌ fail | 100 → **5** (-95) ⚠️ |
+| **#11** | ✅ pass | ❌ fail | 100 → **60** (-40) |
+| **#13** | ✅ pass | ❌ fail | 100 → **60** (-40) |
+| **#19** | ✅ pass | ❌ fail | 100 → 100 (functional 掉了) |
+| **#24** | ✅ pass | ❌ fail | 100 → 100 (functional 掉了) |
+
+### ⚡ 分数变化（通过状态不变）
+
+| 任务 | Score 变化 | 说明 |
+|---|---|---|
+| **#10** | 63.3 → 46.7 | ⬇️ 下降 |
+| **#12** | 20 → 25 | ⬆️ 小幅上升 |
+| **#16** | 60 → 25 | ⬇️ 大幅下降 |
+
+### 📝 结论
+
+**总体略退步**。净变化 -1 个 pass（+4 -5），核心问题是：
+
+1. **#9 暴跌至 5 分**（100→5），这是最严重的回退，需要重点排查
+2. **#11、#13** 从满分掉到 60 分，也是显著退步
+3. **#19、#24** functional 失败但 agentic_score 仍为 100，可能是非功能性变更
+4. 好消息是 **#6 跃升到 95 分**、**#14 跃升到 84 分**，说明某些方面的改进是有效的
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;大概近 40 个测试 case 中，只比最近的 glm5.1 的结果多出一个失败。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;pass rate 从 64.86% -&amp;gt; 62.16% 降低 2.7%&lt;/li&gt;&lt;li&gt;Avg Agentic Score 从 92.17 -&amp;gt; 88.26&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;表现非常惊艳！这比之前测试 minimax 的结果要好太多了，难怪 minimax 股价掉一半。而且这还是 deepseek flash，我有理由相信，如果是 deepseek pro 有可能得出更高的分数。&lt;/p&gt;&lt;p&gt;再看价格这块，这是跑了 4-6 小时的 benchmark 测试集，总共只花了 4.11 块钱，amazing！如果是日常的工作，对 LLM 调用频率不会这么满。所以我们可以把这个当作真正日常工具的 token 消耗的基准参考。
+一天4块钱，一个月120，比 pro 的 coding plan 还省了！如果把周未排除那价格还要低，妥妥的价格屠夫。&lt;/p&gt;&lt;p&gt;&lt;img src=&quot;/static/deepseek-token.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;token 数总共是 15,939,170。看看分布，cache hit 大概在 83% 的样子，我没有专门针对我的 agent 优化过缓存命中率，不确定这大概是一个什么样的水平，还有多少价格空间。
+主要是 coding plan 那边没有啥太多优化 cache hit 的动力。如果切套餐了，这个还是可以搞一搞。&lt;/p&gt;</content></entry></feed>
