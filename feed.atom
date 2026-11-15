@@ -1,5 +1,189 @@
 <?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom"><title>Arthur 的博客</title><subtitle>伟大的野心家，实践家</subtitle><updated>2026-09-25T22:22:42Z</updated><link rel="alternate" type="text/html" href="https://tiancaiamao.github.io/" /><link rel="self" type="application/atom+xml" href="https://tiancaiamao.github.io/feed.atom" /><rights>Copyright (c) 2025, Arthur Mao</rights><id>https://tiancaiamao.github.io/</id><author><name>Arthur</name><email>tiancaiamao@gmail.com</email></author><entry><title>tinyactor 是如何处理 GC 与 C API 交互的</title><link href="https://tiancaiamao.github.io/tinyactor-gc.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tinyactor-gc.md</id><updated>2026-09-25T22:22:42Z</updated><content type="html">&lt;p&gt;之前写过一篇&lt;a href=&quot;/tiny-actor.md&quot;&gt;tiny-actor&lt;/a&gt;，一个参考 Erlang/Gleam 的小的 actor 语言。
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Arthur 的博客</title><subtitle>伟大的野心家，实践家</subtitle><updated>2026-11-14T16:38:42Z</updated><link rel="alternate" type="text/html" href="https://tiancaiamao.github.io/" /><link rel="self" type="application/atom+xml" href="https://tiancaiamao.github.io/feed.atom" /><rights>Copyright (c) 2025, Arthur Mao</rights><id>https://tiancaiamao.github.io/</id><author><name>Arthur</name><email>tiancaiamao@gmail.com</email></author><entry><title>tinyactor 来碰瓷 Go 啦！关于性能的误区</title><link href="https://tiancaiamao.github.io/tinyactor-vs-go-performance.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tinyactor-vs-go-performance.md</id><updated>2026-11-14T16:38:42Z</updated><content type="html">&lt;p&gt;写完 &lt;a href=&quot;/tiny-actor.md&quot;&gt;tinyactor&lt;/a&gt; 这个项目之后，我基本上再没碰过我手写的 cora 项目。
+它们都服务于同一个梦想，就是用我自己设计的语言来写东西。cora 是我许多年的思考和探索，是一行一行手敲出来的心血的结晶，并且，它是 lisp！
+但是 tinyactor 不是，我没有手写一行的代码，全是让 agent 写的。而且 tinyactor 也不是 lisp 语法，理由是我发现 agent 写代码不喜欢 lisp 中 &lt;code&gt;)))))))&lt;/code&gt; 这样地狱级的括号对齐，容易犯错。&lt;/p&gt;&lt;p&gt;tinyactor 并没有像 cora 那样，选择编译到 C，而是用性能更差的 bytecode VM 方式。
+为什么呢？VM 并不是慢到没法用，而是通用性更好。关于性能，大众有不少误解。
+所以本文就是聊一聊关于性能的误区，并且特定场景下 tinyactor 甚至不比 Go 慢，哪怕它是用 VM 实现。&lt;/p&gt;&lt;h2&gt;第一个故事：栈虚拟机真的比寄存器虚拟机慢么？&lt;/h2&gt;&lt;p&gt;解释器实现，一般有 AST 树遍历的解释器，以及编译成字节码的解释器。前者性能太差了，很少有实际的生产场景中使用，而后者则能用于通用场景。
+字节码解释器又可以细分于基于栈虚拟机，和基于寄存器虚拟机。&lt;/p&gt;&lt;p&gt;lua 就是寄存器虚拟机，大众通常会觉得寄存器虚拟机更快一些，觉得 lua 是最快的解释器之一，是因为它是寄存器虚拟机。
+这其实是一个误解！经过一些优化的栈虚拟机，其实速度并不落后于寄存器虚拟机。&lt;/p&gt;&lt;p&gt;我们先看看，常规的栈虚拟机实现，性能为什么容易落后于寄存器虚拟机。&lt;/p&gt;&lt;p&gt;以 (+ a b) 这个表达式为例，编译到栈虚拟机的字节码，一般是&lt;/p&gt;&lt;pre&gt;&lt;code&gt;load i
+push
+load j
+push
+add
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;而编译到寄存器虚拟机的字节码，则一般是&lt;/p&gt;&lt;pre&gt;&lt;code&gt;R[i] = R[i] + R[j]
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;也就是说，寄存器虚拟机的指令数，往往比栈虚拟机的指令数短很多！
+指令数为什么会影响到性能呢？这就不得不说一个解释器的解释开销。&lt;/p&gt;&lt;p&gt;字节码解释器的写法大概可理解为这样的伪代码：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;while (1) {
+    opcode = bytecode[ip]
+    switch (opcode) {
+        case PUSH: ...
+        case ADD:  ...
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;它就涉及取出一条指令，根据指令做 switch，跳进去，再跳回 for 循环做下一条指令派发。
+相对于 push / pop / add 这些实际执行的事情，opcode 消耗在 dispatch loop 的开销是很大的。
+&lt;strong&gt;指令数越多，这块浪费的总体开销就越大&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;寄存器虚拟机相比于栈虚拟机，指令数量更短，同样的程序编译出来，它的 dispatch 上的开销就会节省很多。
+不过没关系，stack 虚拟机虽然指令数更多，但是有一个技巧叫 superinstructions 可以把指令数省下来。&lt;/p&gt;&lt;h3&gt;superinstructions&lt;/h3&gt;&lt;p&gt;&amp;quot;超级指令&amp;quot;，就是我们可以观察和分析字节码里面，那些共同出来的 pattern，把多条指令合并成一条指令。&lt;/p&gt;&lt;p&gt;比如说&lt;a href=&quot;https://github.com/tiancaiamao/tinyactor/blob/79ec728bf547d8141ac47de364efe2ad4000361a/src/vm.c#L520-L532&quot;&gt;这里&lt;/a&gt;&lt;/p&gt;&lt;p&gt;load, push 取一个局部变量，把它放到栈顶，这两条指令经常是成对出现的，我们可以把它缩写成一个 loadp 指令，表示 load + push。
+类似的还有 constp, globp，都是常量、全局变量加上 push 的复合指令。&lt;/p&gt;&lt;p&gt;然后还有 JIF_LT，这个是 jump if less than，因为我们频繁会出现比较，比完之后根据结果立马再 jump。原始的 op_lt 和 op_jif 就可以合并成 op_jif_lt。&lt;/p&gt;&lt;p&gt;当我们把这些常见的指令组合，变成单条超级指令之后，我测试过一个实际数据，同样一个真实程序，&lt;strong&gt;字节码的指令数大约减少了 30~40%&lt;/strong&gt;。
+这个优化之后，我们就可以把栈虚拟机的指令数多于寄存器虚拟机的劣势，追回一大部分了。&lt;/p&gt;&lt;p&gt;这个优化也很容易做，就是拿一些实际的程序的指令分析一下，哪些是经常一起出来的。
+然后生成代码那边改一改，发射指令的时候，如果前一条指令跟后一条指令正好符合可组合的 pattern，就合并掉。&lt;/p&gt;&lt;h3&gt;top-of-stack-caching&lt;/h3&gt;&lt;p&gt;再说另一个栈虚拟机和寄存器虚拟机的差异点。寄存器虚拟机这边，它的计算的落点是不受位置的限制的，就是说你可以使用最后面的位置，也可以使用中间任意位置。&lt;/p&gt;&lt;p&gt;比如说代码是&lt;/p&gt;&lt;pre&gt;&lt;code&gt;(let (a  42)
+    ...
+    (+ a 3))
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;假设一个变量 a 在位置为 3 的 slot。假设当前 pos 是 18。
+在寄存器虚拟机这边，它完全是可以这样操作的&lt;/p&gt;&lt;pre&gt;&lt;code&gt;R[18] = R[18] + R[3]
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;就是说可以&lt;strong&gt;任意位置寻址&lt;/strong&gt;。但是栈虚拟机不一样，不能是任意位置，它只能在栈顶位置操作。
+也就是&lt;/p&gt;&lt;pre&gt;&lt;code&gt;load 3
+push
+add
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;先从 slot 3 位置把变量 a 捞到栈顶，然后才能对栈顶的两数加 add 操作。
+这个需要 push 到栈顶后，才能参与计算的过程，也是一个栈虚拟机相对于寄存器虚拟机的劣势。&lt;/p&gt;&lt;p&gt;但是...这种也是可以做优化的。&lt;/p&gt;&lt;p&gt;其实所谓的寄存器虚拟机，它只是一个内存中的表示。一般是用一个 R[] 这样的数组。
+在 C 代码里面，是 R[i] R[j] R[k] 这些东西来搞的虚拟寄存器。
+这意味着，它们并不能真正使用到物理硬件寄存器！&lt;/p&gt;&lt;p&gt;栈虚拟机这边，我们一般是用的 base[sp] 来搞的栈。两者其实都不能用到物理的寄存器。
+但是当我们写 C 代码的时候，我们可以用一些技巧，让 C 语言的局部变量来充当物理的寄存器。&lt;/p&gt;&lt;p&gt;代码不能写成这样（伪代码）：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;struct VM {
+    Obj base[];
+    Obj val;
+    int ip;
+    int sp;
+}
+
+void run(struct VM *vm) {
+    while (1) {
+        switch (op) {
+        case op_load:
+            vm-&amp;gt;val = vm-&amp;gt;base[i];
+        case op_push:
+            vm-&amp;gt;val = vm-&amp;gt;base[vm-&amp;gt;sp++];
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;这样写全部是基于 vm 做间接访问的，对物理寄存器的利用特别差！&lt;/p&gt;&lt;p&gt;我们需要这样写：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;void run(struct VM *vm) {
+    Obj val = vm-&amp;gt;val;
+    Obj *sp = &amp;amp;vm-&amp;gt;base[vm-&amp;gt;sp];
+
+    while (1) {
+       switch (op) {
+        case op_load:
+            val = bp[i];
+        case op_push:
+            *sp++ = val;
+        }
+    }
+
+    vm-&amp;gt;sp = sp - vm-&amp;gt;base;
+    vm-&amp;gt;val = val;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;注意到差异是什么？我们在进入 run 的时候，先把这些值读进 C 函数的局部变量，
+直到退出 run 再把局部变量刷回 vm 中，中间的代码都不是通过 vm 做间接访问的。
+&lt;strong&gt;这么写代码，局部变量会被分配真实的物理寄存器，效率远高于 vm-&amp;gt;xx 间接访问&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;那 &lt;a href=&quot;/top-of-stack-caching.md&quot;&gt;top-of-stack-caching&lt;/a&gt; 又是一个什么样的技巧呢？我们可以假设永远有一个寄存器，作为栈顶位置。
+假设没有 top-of-stack 寄存器的时候，我们做&lt;/p&gt;&lt;pre&gt;&lt;code&gt;(+ a b)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;是需要&lt;/p&gt;&lt;pre&gt;&lt;code&gt;push a
+push b
+add
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;而有了这个虚拟的寄存器之后，我们实际上是这样发的字节码：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;loadp a    ; load + push 一条搞定，a 进栈
+load  b    ; b 直接落进 val，不压栈
+add        ; val = val + 弹栈
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;看到没，原来 5 条指令（load/push/load/push/add），现在 3 条，并且第二次的 push 省掉了！还有，由于 val 是 C 的局部变量，它是会被映射成物理寄存器的！&lt;/p&gt;&lt;p&gt;而寄存器虚拟机，R[i] = R[i] + R[j]，这个 R[n] 的访问并不是走物理寄存器，而是走的内存。&lt;/p&gt;&lt;p&gt;你肯定想问，难道寄存器虚拟机，就不能直接写成 Ri Rj Rk ... 这样的 C 语言局部变量，从而利用真正的物理寄存器么？&lt;/p&gt;&lt;p&gt;不能。因为进入 dispatch 之后，把字段赋值到 C 局部变量，再到 dispatch 返回的时候把 C 局部变量刷回去，
+这个套路的前提是参与运算的东西只有 val 一个（栈虚拟机的 top-of-stack-caching 正好满足）。
+而寄存器虚拟机，R[n] 的槽位是很多的，就没法做这种「进入时复制到 C 变量，退出时再刷回 vm」的操作了。&lt;/p&gt;&lt;p&gt;经过 superinstructions / top-of-stack-caching 等这些优化之后，栈虚拟机的效率，其实并不弱于寄存器虚拟机。&lt;/p&gt;&lt;p&gt;我实测比较过 tinyactor 跟 python lua php 这些主流的，还有包括 wren janet petite 等等这些小众的，VM 实现的性能。
+其实结果都算是在同一梯队。&lt;/p&gt;&lt;p&gt;凭印象，大家觉得最快和最慢的分别是哪个？打破偏见，php 并不是最慢的，而且还处于中上水平。
+python 经过最近的几个版本的优化，进步不小，但是还是要落后于 tinyactor 一些。
+wren 是 crafting interpreters 的作者写的一门语言，大家肯定会觉得，这是由解释器专家写出来的嘛，肯定性能比 tinyactor 会更好一些。
+但是打破偏见，真正的结果是，它也是总体略弱于 tinyactor 一点的。&lt;/p&gt;&lt;p&gt;最快的是 petite，这是 chez scheme 的解释器版本。但 tinyactor 咬得很紧，差个 10%，具体要看 case。
+传说中它可以以解释器身份去碰瓷编译器的性能的，实际验证下来，并不能。也就是性能比较好的解释器罢了。
+任何带 jit 或者 aot 的编译的，如果在数值计算这个方向不能至少 3 倍以上吊打解释器实现的，那作者一定是脑子不太够用，不建议当程序员。&lt;/p&gt;&lt;p&gt;把上面这些印象落成数字。case 从&lt;a href=&quot;https://ecraven.github.io/r7rs-benchmarks/&quot;&gt;这里&lt;/a&gt;那一套里挑三个：递归的 fib(32)、tak(26,18,9)、还有一个 1600 万次的循环累加。每个跑三遍取最快，全部归一到 tinyactor = 1.00，数越小越快：&lt;/p&gt;&lt;p&gt;| 实现 | fib(32) | tak | 循环累加 | 几何平均 |
+|---|---|---|---|---|
+| tinyactor（预编译 .tabc） | 1.00 | 1.00 | 1.00 | &lt;strong&gt;1.00&lt;/strong&gt; |
+| lua 5.5（寄存器 VM） | 0.92 | 0.95 | 0.65 | 0.82 |
+| petite（chez 的解释器） | 0.89 | 0.96 | 1.04 | 0.96 |
+| janet | 0.95 | 0.88 | 1.48 | 1.08 |
+| python 3.15 | 1.41 | 1.17 | 1.57 | 1.37 |
+| guile 3.0 | 3.47 | 3.47 | 5.34 | 4.00 |
+| luajit（JIT） | 0.20 | 0.17 | 0.14 | 0.17 |
+| chez（编译执行） | 0.47 | 0.39 | 0.24 | 0.35 |&lt;/p&gt;&lt;p&gt;看这张表：lua 两个 case 跟 tinyactor 打平，循环累加上反过来比我快 35%；petite 一个赢一个平一个略输；janet 是循环快、递归输。这就是「同一梯队」具体长什么样——纯解释器这一堆里，谁也没跟谁拉开一倍。&lt;/p&gt;&lt;p&gt;从前，做这些对比会比较麻烦，因为不好掌握那么多种语言去写一些 benchmark。
+但是现在有 agent 了很容易的，就一句话的事，让它把 case 弄过来，对比一下 A B C D ... 这些语言的性能。&lt;/p&gt;&lt;h2&gt;第二个故事：tinyactor vs Go, tinyactor 有资格碰瓷么？&lt;/h2&gt;&lt;p&gt;前面已经说过了，tinyactor 就是一个基于栈虚拟机的字节码解释器实现，而 Go 语言是编译型的呀，tinyactor 怎么可能碰瓷呢？&lt;/p&gt;&lt;p&gt;先来一个开胃小菜。&lt;/p&gt;&lt;p&gt;Go 是用 goroutine 支持并发的，tinyactor 是一个 actor 模型。&lt;/p&gt;&lt;p&gt;我们来一个 1M actor 的测试，对比内存开销。tinyactor 的：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;fn worker() {
+    recv()
+}
+
+fn spawn_workers(n) {
+    if n == 0 {
+        print(&amp;quot;READY&amp;quot;)
+        recv()
+    } else {
+        spawn(fn { worker() })
+        spawn_workers(n - 1)
+    }
+}
+
+fn main() {
+    spawn_workers(1000000)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;Go 的：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;func main() {
+    ch := make(chan struct{})
+    for i:=0; i&amp;lt;1000000; i++ {
+        go func() {
+            &amp;lt;-ch
+        }
+    }
+    fmt.Println(&amp;quot;READY&amp;quot;)
+    time.Sleep(time.Hour)
+    close(ch)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;两个都是启动完就卡住不返回的，等它打出 READY，用 &lt;code&gt;vmmap -summary&lt;/code&gt; 量一下物理内存（physical footprint）：&lt;/p&gt;&lt;p&gt;| | tinyactor | go |
+|---|---|---|
+| 1M 个躺着不干活的进程 / goroutine | 998 MB | 2.6 GB |
+| 平摊到每一个 | &amp;lt;1.0 KB | ~2.6 KB |&lt;/p&gt;&lt;p&gt;2.6 倍。差在哪？Go 的 goroutine 一起来就先给 2KB 栈，加上 g 结构体本身的开销；tinyactor 的进程只有一个 Proc 头，栈是&lt;strong&gt;所有进程共用一根值栈&lt;/strong&gt;，阻塞的进程在上面就占自己那一帧，几个槽的事。&lt;/p&gt;&lt;p&gt;如果让 tinyactor 写的 fib(30) 跟 Go 的实现比，那肯定是被吊着打的。但是可以“作弊”，tinyactor 可以把模块用 C 实现，让 C 去跟 Go 拼刺刀，而 tinyactor 留着当粘合剂。&lt;/p&gt;&lt;p&gt;不能用这么明显的方式去碰瓷，显得底气不足。我构造的场景是这样的。&lt;/p&gt;&lt;p&gt;写了一个两边都能跑的 HTTP 服务——&lt;strong&gt;TA 一份，Go 一份&lt;/strong&gt;——然后用&lt;strong&gt;同一个压测客户端&lt;/strong&gt;压它们。为了让比较不变成「谁写的 HTTP 解析器更聪明」，服务被设计得很窄：读请求头、算一个 SHA-256、写一行 JSON。&lt;/p&gt;&lt;pre&gt;&lt;code&gt;POST /light     (no body)   →   {&amp;quot;bytes&amp;quot;:65536,&amp;quot;sha256&amp;quot;:&amp;quot;&amp;lt;hex&amp;gt;&amp;quot;}
+POST /heavy     (no body)   →   {&amp;quot;bytes&amp;quot;:16777216,&amp;quot;sha256&amp;quot;:&amp;quot;&amp;lt;hex&amp;gt;&amp;quot;}
+POST /delay1ms  (no body)   →   {&amp;quot;delay_ms&amp;quot;:1}
+POST /fairness  (no body)   →   {&amp;quot;counts&amp;quot;:[c0,...,c31]}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;四个端点，四种工作：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;code&gt;/light&lt;/code&gt;：&lt;strong&gt;64KB 摘要&lt;/strong&gt;。绝大多数真实服务的样子——请求小、计算小，但请求路径本身有开销。&lt;/li&gt;&lt;li&gt;&lt;code&gt;/heavy&lt;/code&gt;：&lt;strong&gt;16MB 摘要&lt;/strong&gt;。CPU 密集，是「用 C 算重活」的典型场景。&lt;/li&gt;&lt;li&gt;&lt;code&gt;/delay1ms&lt;/code&gt;：睡 1ms 再答。&lt;strong&gt;延迟敏感&lt;/strong&gt;请求——它测的是运行时把挂起的 actor 叫醒要多久。&lt;/li&gt;&lt;li&gt;&lt;code&gt;/fairness&lt;/code&gt;：32 个 CPU-bound worker 跑 3s，回传各自的迭代次数。&lt;strong&gt;公平性&lt;/strong&gt;实验——服务只管干活，离散度由客户端算。&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;&lt;strong&gt;工作量是协议的一部分&lt;/strong&gt;（大小固定在端点里，不是请求体里），&lt;strong&gt;负载形态由客户端决定&lt;/strong&gt;：客户端只负责挑端点（&lt;code&gt;HEAVYPCT&lt;/code&gt; 是 &lt;code&gt;/heavy&lt;/code&gt; 的占比，&lt;code&gt;DELAYC&lt;/code&gt; 是同时跑的延迟敏感探针条数，&lt;code&gt;-fairness&lt;/code&gt; 是跑公平性实验），两侧拿到完全相同的端点序列。&lt;/p&gt;&lt;p&gt;这件事是这次重做基准的核心。上一版的协议是 &lt;code&gt;POST /digest {&amp;quot;bytes&amp;quot;:N}&lt;/code&gt;，大小跟着请求走——那意味着「工作量」是请求的一部分，客户端的 body 解析开销、两侧 body 是否真的一致，都要额外校验。现在负载是协议的一部分，&lt;strong&gt;两侧做的工作逐字节相同&lt;/strong&gt;，runner 每次跑都抽检两边的响应摘要（&lt;code&gt;same work: yes&lt;/code&gt; / &lt;code&gt;digest: every sampled response matched&lt;/code&gt;）。&lt;/p&gt;&lt;h3&gt;角度一：语言 —— 调 C 内核，TA 不比 Go 慢&lt;/h3&gt;&lt;p&gt;先看最干净的一组数：单客户端、无排队，纯粹测每请求的成本。&lt;/p&gt;&lt;p&gt;| | tinyactor | go | ta/go |
+|---|---|---|---|
+| light 请求（64KB 摘要） | 0.112 ms | 0.052 ms | 2.15× |
+| &lt;strong&gt;heavy 请求（16MB 摘要）&lt;/strong&gt; | &lt;strong&gt;6.091 ms&lt;/strong&gt; | &lt;strong&gt;6.052 ms&lt;/strong&gt; | &lt;strong&gt;1.01×&lt;/strong&gt; |
+| light req/s | 8435/s | 18553/s | 0.45× |
+| &lt;strong&gt;heavy req/s&lt;/strong&gt; | &lt;strong&gt;163/s&lt;/strong&gt; | &lt;strong&gt;158/s&lt;/strong&gt; | &lt;strong&gt;1.03×&lt;/strong&gt; |&lt;/p&gt;&lt;p&gt;&lt;strong&gt;heavy 是打平的&lt;/strong&gt;：16MB 摘要 6.091ms 对 6.052ms，吞吐 163/s 对 158/s。&lt;/p&gt;&lt;p&gt;怎么验证「打平」不是因为两边都没认真干活？把两组数相减：16MB 减去 64KB 的那部分摘要，TA 花 5.98ms，Go 花 6.00ms——&lt;strong&gt;两侧的 SHA-256 都是 ~2.7 GB/s&lt;/strong&gt;。内核那层两边一模一样。&lt;/p&gt;&lt;p&gt;再把 light 那一行拆开：64KB 摘要在 2.7 GB/s 下只要 0.023ms，可 TA 的 light 请求总共花了 0.112ms，Go 花了 0.052ms。&lt;strong&gt;扣掉内核，TA 的请求路径 0.089ms，Go 0.029ms&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;所以 2.15× 全部来自请求路径：HTTP 头解析、JSON、actor 分发。这是 TA 要还的债，但跟 C 没关系。&lt;/p&gt;&lt;blockquote&gt;&lt;p&gt;&lt;strong&gt;一句话&lt;/strong&gt;：在 TA 里用 C 算重活，重活本身不吃亏（1.01×）；TA 比 Go 慢的地方是胶水，不是内核。&lt;/p&gt;&lt;/blockquote&gt;&lt;h3&gt;角度二：延迟 —— 尾延迟是调度器的指纹&lt;/h3&gt;&lt;p&gt;延迟这块我看两件事：调度器公不公平，还有 CPU 打满的时候，等着的小请求、和刚睡醒的 actor，各自要等多久。&lt;/p&gt;&lt;h4&gt;公平性&lt;/h4&gt;&lt;p&gt;公平性也是同一个服务的一个端点（&lt;code&gt;POST /fairness&lt;/code&gt;），不是另写一份程序：服务里 32 个 actor 跑 3s，回传各自的迭代次数，&lt;strong&gt;客户端算离散度&lt;/strong&gt;——所以两侧被测的是同一件事。&lt;/p&gt;&lt;p&gt;先把「公平」这件事单独测干净：32 个 CPU-bound actor，各跑 3 秒，谁也不主动让路，只能靠运行时抢占。看迭代次数的离散度 &lt;code&gt;dev = (max-min)/max × 100000&lt;/code&gt;，越小越公平。&lt;/p&gt;&lt;p&gt;| workers | tinyactor dev | go dev | ta/go |
+|---|---|---|---|
+| 1 | 14 | 33007 | &lt;strong&gt;2358×&lt;/strong&gt; |
+| 2 | 7 | 21659 | 3094× |
+| 4 | 69 | 35147 | 509× |
+| 8 | 4997 | 35105 | 7.0× |&lt;/p&gt;&lt;p&gt;单 worker 就能看出 Go 的调度器有多粗：32 个 actor 抢一个核，Go 那边最忙的 actor 比最闲的多跑了 33007/100000（33%），TA 那边是 14/100000（0.014%）。&lt;strong&gt;差三个数量级&lt;/strong&gt;。&lt;/p&gt;&lt;p&gt;（8 worker 那行噪声大：32 个 actor 摊到 8 个 worker 上，而这台机器是 4 个性能核 + 4 个能效核，actor 落在哪个核上直接决定离散度。3 次重复里 TA 那边在 4163–4997 之间晃，Go 那边在 28005–35105 之间晃。）&lt;/p&gt;&lt;h4&gt;CPU 满载下的尾延迟&lt;/h4&gt;&lt;p&gt;现在回到 HTTP 服务：80/20 的摘要负载把 CPU 打满，同时打延迟敏感探针。6 worker 每侧：&lt;/p&gt;&lt;p&gt;| | tinyactor | go | ta/go |
+|---|---|---|---|
+| &lt;strong&gt;delay p50&lt;/strong&gt; | &lt;strong&gt;2.33&lt;/strong&gt; | &lt;strong&gt;8.94&lt;/strong&gt; | &lt;strong&gt;0.26×&lt;/strong&gt; |
+| &lt;strong&gt;delay p99&lt;/strong&gt; | &lt;strong&gt;6.15&lt;/strong&gt; | &lt;strong&gt;25.27&lt;/strong&gt; | &lt;strong&gt;0.24×&lt;/strong&gt; |
+| light p50 | 2.38 | 1.07 | 2.22× |
+| &lt;strong&gt;light p99&lt;/strong&gt; | &lt;strong&gt;6.33&lt;/strong&gt; | &lt;strong&gt;14.33&lt;/strong&gt; | &lt;strong&gt;0.44×&lt;/strong&gt; |
+| heavy p50 | 12.02 | 8.79 | 1.37× |
+| heavy p99 | 18.00 | 22.98 | 0.78× |&lt;/p&gt;&lt;p&gt;三件事：&lt;/p&gt;&lt;p&gt;&lt;strong&gt;1. 唤醒延迟差 4 倍。&lt;/strong&gt; &lt;code&gt;/delay1ms&lt;/code&gt; 只睡 1ms，客户端看到 2.33ms（TA）对 8.94ms（Go）。多出来的 8ms 是 Go 的 runtime 让醒来的 goroutine 排在 CPU-bound 后面等一个 10ms 的时间片。TA 这边是 FIFO 队列 + 1000 reduction 的片预算，醒来的 actor 最多等前面几个 actor 各跑一个片。单 worker 时更明显：8.69ms 对 28.63ms（0.30×），p99 16.99 对 66.92（0.25×）。
+&lt;strong&gt;2. 加到 8 个 P 也不能救。&lt;/strong&gt; 8 worker 时 Go 的 delay p50 还是 7.70ms（TA 1.98ms，0.26×）——Go 的 goroutine 醒来后要排在 run queue 后面，而且当前的 CPU-bound goroutine 还要跑满它的时间片（Go 的抢占周期是 10ms）才会被换下来；加 P 改变不了这件事。TA 这边是另一套机制：调度器是 &lt;strong&gt;FIFO 运行队列 + 固定 reduction 预算（1000，&lt;code&gt;scheduler.c&lt;/code&gt; 里的 &lt;code&gt;MAX_REDUCTIONS&lt;/code&gt;）&lt;/strong&gt;，一个 actor 跑完一个片就重新入队到队尾，所以醒来的 actor 最多等「排在它前面那几个」各跑一个片。一个片大约 0.9ms（16MB 摘要一次请求让出 7 次，6.091ms / 7），醒来的 actor 前面平均排了两三个，p50 2.33ms 这个量级对得上。
+&lt;strong&gt;3. 小请求的尾巴被 heavy 拖着走，TA 拖着少得多。&lt;/strong&gt; 这是「light 受到 heavy 影响小」的量化：CPU 满载时，Go 的 light p99 是 14.33ms，TA 是 6.33ms（&lt;strong&gt;0.44×&lt;/strong&gt;）。heavy 请求在 Go 那边把整个核占满，小请求排在后面；TA 的时间片更粗但切换更有规律，小请求不会被无限期推后。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;代价写在明处&lt;/strong&gt;：p50 是反过来——TA 的 light p50 2.38ms 对 Go 的 1.07ms，&lt;strong&gt;慢 2.2×&lt;/strong&gt;。切片粗，小请求偶尔要等当前时间片跑完。TA 换来的不是「都更快」，是&lt;strong&gt;尾巴更短、中位数更长&lt;/strong&gt;。这个分布形状差异，是两种调度策略的直接投影。
+（无探针的纯摘要负载下形状一样：light p50 2.12× 差、p99 0.42× 好；heavy p50 1.30× 差、p99 0.69× 好。）&lt;/p&gt;&lt;h3&gt;角度三：吞吐 —— 有请求要等的服务，TA 多干 21%&lt;/h3&gt;&lt;p&gt;前面两组都是单看一个指标。真实的服务不是这样，它是混的：一边有要烧 CPU 的重活，一边有要马上回的小请求，还有在等着的请求。这一角测的就是混起来的账。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;先看纯摘要的 mix（6 worker，不带探针）：&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;| | tinyactor | go | ta/go |
+|---|---|---|---|
+| light req/s | 2974 | 3054 | 0.97× |
+| heavy req/s | 743 | 762 | 0.98× |
+| &lt;strong&gt;total req/s&lt;/strong&gt; | &lt;strong&gt;3717&lt;/strong&gt; | &lt;strong&gt;3816&lt;/strong&gt; | &lt;strong&gt;0.97×&lt;/strong&gt; |&lt;/p&gt;&lt;p&gt;纯摘要的时候两边一个水平，总量差 3%，跟前面一致：重活是 C 在干，TA 不吃亏；TA 贵在胶水。&lt;/p&gt;&lt;p&gt;&lt;strong&gt;加上延迟敏感的探针（同样 6 worker，4 条探针），账就变了：&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;| | tinyactor | go | ta/go |
+|---|---|---|---|
+| delay req/s | 1596 | 396 | 4.03× |
+| light req/s | 2839 | 3077 | 0.92× |
+| heavy req/s | 710 | 767 | 0.93× |
+| &lt;strong&gt;total req/s&lt;/strong&gt; | &lt;strong&gt;5146&lt;/strong&gt; | &lt;strong&gt;4240&lt;/strong&gt; | &lt;strong&gt;1.21×&lt;/strong&gt; |&lt;/p&gt;&lt;p&gt;&lt;strong&gt;总吞吐赢了 21%。&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;赢在哪儿？赢在探针：同样的延迟敏感负载，TA 多完成 4 倍（1596/s 对 396/s）。这 4 倍不是凭空来的——客户端是固定 4 条并发探针的闭环，吞吐 = 并发数 / 单请求延迟，上一节那个 4 倍的延迟差，直接就在这里变成 4 倍的吞吐差。&lt;/p&gt;&lt;p&gt;开始我以为 TA 是靠 light 多完成赢的，后来看数才发现不是（light 那一栏 TA 还少 8%）。真正的机制是：&lt;strong&gt;同样一台机器，一个调度器如果能把延迟敏感的请求照顾好，它手里的总时间就被更有效率地用了&lt;/strong&gt;。Go 那边的 goroutine 醒来要排在 run queue 后面，还要等当前的 CPU-bound goroutine 跑满一个 10ms 时间片；这段时间那个核并没有在算它那份摘要，而是空转或者让给了一个抢不到优先级的请求。TA 是固定 reduction 预算，跑完一个片就重新排队，醒来的 actor 最多等前面几个各跑一个片。&lt;/p&gt;&lt;p&gt;所以这笔账是：TA 少做几个点的摘要，把探针多做四倍，净账 +21%。&lt;/p&gt;&lt;p&gt;这个故事的版本应该是：&lt;strong&gt;TA 不是「算得更快」，是「调度得更不浪费」&lt;/strong&gt;。在一个「既有请求要等，又有 CPU 要烧」的服务里，后者才是总吞吐的来源——而真实的服务，基本都是这个形态。&lt;/p&gt;&lt;h3&gt;一张表收一下&lt;/h3&gt;&lt;p&gt;每项指标单独列出来：&lt;/p&gt;&lt;p&gt;| 角度 | 结论 | 关键数字（TA / Go） |
+|---|---|---|
+| 语言：调 C 内核 | 不吃亏 | heavy 16MB 摘要 6.091 / 6.052 ms（1.01×） |
+| 语言：请求路径 | 慢 2.15×，是下一笔债 | 扣内核后 0.089 / 0.029 ms |
+| 延迟：公平性 | 高三个数量级 | dev 14 / 33007（1 worker） |
+| 延迟：唤醒 | 快 4 倍 | delay p50 2.33 / 8.94 ms |
+| 延迟：小请求尾巴 | 短一半多 | light p99 6.33 / 14.33 ms |
+| 延迟：小请求中位数 | 慢 2.2×（代价） | light p50 2.38 / 1.07 ms |
+| 吞吐：纯摘要 | 打平 | total 3717 / 3816 req/s（0.97×） |
+| 吞吐：带延迟敏感负载 | 赢 21% | total 5146 / 4240 req/s（1.21×） |&lt;/p&gt;&lt;p&gt;那这么多数字里最关键的是哪几个？我自己只看这五条：&lt;/p&gt;&lt;ul&gt;&lt;li&gt;计算密集的重查询：打平&lt;/li&gt;&lt;li&gt;1m actor 的内存开销：tinyactor 赢&lt;/li&gt;&lt;li&gt;调度公平性：tinyactor 赢&lt;/li&gt;&lt;li&gt;混合负载总吞：tinyactor 赢&lt;/li&gt;&lt;li&gt;混合负载轻查询的 P99 延迟：tinyactor 吊打 Go&lt;/li&gt;&lt;/ul&gt;&lt;h2&gt;第三个故事：编译到 C 性能就会更好么？&lt;/h2&gt;&lt;p&gt;我曾经也无数次地摇摆 -- 会不会编译到 jit 性能就更好一些，亦或是生成到 C 可以取得一个性能和实现复杂性上的一个甜点区？&lt;/p&gt;&lt;p&gt;无论是 cora 还是 tinyactor，它们都是自己管理堆栈的，这是为了 GC 那边好处理，不依赖 C 的原生栈。
+代价就是，如果翻译到 C 就不能够直接做 1:1 的翻译。因为一旦用 C 的栈之后，要支持非常多的 actor 上下文切换，就要去弄汇编层的奇技淫巧了，并且给 GC 带来特别多的麻烦。
+而自己管理 vm 堆栈，并且无副作用语言，可以每个 vm 独立 GC。这些优势是我不想放弃的。&lt;/p&gt;&lt;p&gt;cora 翻译到 C 的做法我已经在&lt;a href=&quot;/c-stackful-coroutine.md&quot;&gt;另一篇博客&lt;/a&gt;中记录过，这里不重复。&lt;/p&gt;&lt;p&gt;tinyactor 编译到 C 的方式，我想了想，一种方式还是像 cora 这样做，它可以这样生成到 C，但是不用 coroutine 这个 feature，只是把堆栈管理暴露出来。
+还有一种做法就是转换成寄存器虚拟机，然后栈都是基于 R[i] 这样子来搞，也是自己控制的堆栈。
+后者我感觉可能还不如前者，毕竟 C 局部变量没被当成寄存器被充分利用上。&lt;/p&gt;&lt;p&gt;编译到 C 额外引入的复杂度还是高了不少的。所以真正做之前我定了一个指标给 agent：如果至少快 3 倍以上，这个把事就值得投入，否则不值得做。&lt;/p&gt;&lt;p&gt;用&lt;a href=&quot;https://github.com/tiancaiamao/tinyactor/tree/159f7cbcf191915d8a51b1ed7ea8489cdc8f624c/benchmark/core&quot;&gt;一些单元轻量测试&lt;/a&gt;验证之后，结果是 fib / collatz / tailcall 这些纯计算型的都能有 3 倍以上的收益。
+而像 takl / map 这一类的带上 cons 分配的 case，则效果不明显。&lt;/p&gt;&lt;p&gt;于是我又想，换一个 case，就拿 tinyactor 的编译器自举过程来验证收益，这是一个接近真实场景的例子，
+如果编译到 C 能够比虚拟机解释快，就值得做。这个测试结果验证下来，这是一个提升有 4X+ 的负载。&lt;/p&gt;&lt;p&gt;所以我决定继续做一做。等做出来之后，我又换了一个负载再测。
+我还是拿那个 tinyactor vs go 的 case 去做验证，结果发现收益只有 1.1~1.2X。
+这收益太小了，完全不值得。&lt;/p&gt;&lt;p&gt;让 agent 分析为什么，答案是这样的：压测过程中观察，只有 22% 的 CPU 时间是落在 tinyactor 内的，而其它过半的时间是在 C 模块实现的重型计算里面。
+然后不管是 VM 还是 cgen，都共同有很大一块是在 malloc 和 GC 里面。所以这就导致，这个负载即使生成到 C，也是总体没有什么收效的。
+可以优化的是做 runtime 层的优化，那个是 VM 和 cgen 两边都受益的。&lt;/p&gt;&lt;p&gt;看到这样的数据之后，我对编译到 C 方案就彻底去魅了，老老实实就用 VM 方式。
+重计算的，可以用 C 去写模块，扬长避短。&lt;/p&gt;&lt;h2&gt;回到&amp;quot;性能误区&amp;quot;这件事&lt;/h2&gt;&lt;p&gt;三个故事讲完，其实想说的只有一件事：&lt;strong&gt;性能上的结论，脱离场景是没有意义的。&lt;/strong&gt;&lt;/p&gt;&lt;p&gt;我们的大脑太容易陷进这种误区里：VM 就是慢的，编译到 C 就是快的，goroutine 就是轻的，lisp 就是慢的，某某语言就是比另一个快。这往往都不成立——它们本来只是一堆具体条件下的观察，被抽掉了条件，就变成了迷信。&lt;/p&gt;&lt;p&gt;特定场景有特定的做法。不要信&amp;quot;哪个语言快&amp;quot;，只信自己验出来的数。&lt;/p&gt;</content></entry><entry><title>tinyactor 是如何处理 GC 与 C API 交互的</title><link href="https://tiancaiamao.github.io/tinyactor-gc.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/tinyactor-gc.md</id><updated>2026-09-25T22:22:42Z</updated><content type="html">&lt;p&gt;之前写过一篇&lt;a href=&quot;/tiny-actor.md&quot;&gt;tiny-actor&lt;/a&gt;，一个参考 Erlang/Gleam 的小的 actor 语言。
 最近为了它的 GC 和 C 模块交互的设计，前前后后跟 AI 讨论了很多轮，最后收敛到一个我自己觉得相当漂亮的设计。
 感觉值得记录一下。&lt;/p&gt;&lt;h2&gt;背景&lt;/h2&gt;&lt;p&gt;tinyactor 是 per-process 堆 + 半区复制 GC。每个 actor 一个自己的小堆，GC 时把存活对象拷到另一半。&lt;/p&gt;&lt;p&gt;这里多解释两句。VM 里所有的值都分配在 VM 自己管理的内存上，下文叫它托管内存，由 GC 负责回收。GC 的工作方式是，从一些起始位置出发，能摸到的对象当作活的，摸不到的回收——这些起始位置就是 GC root。
 半区复制是把堆分成两半，分配只在其中一半进行，GC 的时候把存活对象拷到另一半，然后两半对调。堆就这么大，一边满了，另一半就是全部的余量，上限就是 2 倍。满了只能 GC，没有&amp;quot;再找操作系统要一点&amp;quot;的选项，这个点后面还会用到。&lt;/p&gt;&lt;p&gt;C 模块（net/file/str 这些）通过一个统一的入口进 VM。在 C 和托管内存怎么交互这件事上，要把设计做对了很难。&lt;/p&gt;&lt;p&gt;先举例子，假设一个 C 模块：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;Val a = gcAlloc()   (1)
@@ -416,56 +600,4 @@ deepseek v4 出来的时候，国产模型首次支持到 1M 的上下文。然�
 只能够分好多个 milestone，而每个 milestone 都需要人类参与，去定一个 milestone 的目标，设计和拆解任务。这需要特别多的人力投入，已经不算是 long run harness 了。&lt;/p&gt;&lt;p&gt;从 speckit 到 workflow，从最初的 speckit 单 agent，到后面 workflow 用状态流变换及多 agent，都不行！workflow 模式的根本困境是：流程越严谨越不灵活，越灵活越不可靠。于是我继续下一阶段的探索。&lt;/p&gt;&lt;p&gt;2025 年三月的时候，无意中看到了有几家公司的做法。可以把这个总结成 planner generator evaluator 三 agent 模式。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;planner 是主 agent，也就是 orchestrator 的定位，负责跟人类交互和规划，理解需求，拆解任务。但是它自身是不直接执行任务的&lt;/li&gt;&lt;li&gt;generator 是真正的执行层，每个拆解出来任务由 planner 给到 generator 执行，每个任务都可以是独立的 generator agent&lt;/li&gt;&lt;li&gt;evaluator 是验收的 agent，因为 generator 自己说自己完成，是不行的。必须由干净的新 agent 来评判&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;generator + evaluator 就是一个小的 ralph loop 的循环，planner 则盯着宏观目标的推进。这三个 agent 协作来完成真正的 long run harness。&lt;/p&gt;&lt;p&gt;这个模式比我之前的 workflow 的设计好的地方，一个是它的任务是动态拆的。而我之前的 workflow 是 design 转 tasks，静态全量生成，并且还需要生成依赖关系。这在项目巨大之后，根本就不现实。
 而 PGE 模式下，大的 milestone 可以拆，小的 tasks 也可以拆，这都是可以 planner 动态决定的。相当于有一个专门生成任务的 agent，和后面具体执行任务的 agent，可以用一个消息队列来解耦合了。&lt;/p&gt;&lt;p&gt;还有一个好的地方是，它的自愈性更强。之前用 workflow 代码驱动的场景，任务失败或者脚本 bug 的情况自愈是很难的。而这边，最坏的情况无非是一个任务本来应该由 generator 执行，由 evaluator 来验收，
 而由于任务失败或者状态问题，退化成了 planner 自己来执行任务或者校验了。这不好，但是它至少能 work，能自愈。&lt;/p&gt;&lt;p&gt;我还感知到一个关于 long run harness 核心的点，就是可测试验证。只要想办法把 spec 变成可测试验证，design 做得好不好，重要性就下降了。就相当于定好宏观目标，给 agent 去微操，通过试错烧 token，大力出奇迹。
-只不过这个在实践中，也是观察到，越做到后期，agent 越是每一个 phase 设计得越来越短，越来越不干活。就跟人类推进项目很像，前 20% 的时间推进了 80% 的进度，后面 80% 的时候推进那剩下的 20%，越推越推不动。&lt;/p&gt;&lt;p&gt;那个大型游戏项目的重写还是没写出来。但是至少算是更近一步吧，这些就是我在 long run harness 的一些探索。&lt;/p&gt;&lt;p&gt;回到开头的问题：个人能不能复现大公司的大型重写？答案是，目前还做不到完全自主的 long run，但 PGE 模式至少让 case 2 这个量级的项目变得可尝试了。每一步探索都在缩小差距，只是这个差距比想象中大。&lt;/p&gt;</content></entry><entry><title>deepseek 使用初印象</title><link href="https://tiancaiamao.github.io/deepseek-first-impression.md" type="text/html" rel="alternate" /><id>https://tiancaiamao.github.io/deepseek-first-impression.md</id><updated>2026-05-12T09:56:42Z</updated><content type="html">&lt;p&gt;以前抢 coding plan 的时候，我就在调侃，这些服务提供商动不动就不可用，各种限流，429 报错，然后就这还是需要抢的...等 deepseek 赶紧出来教育市场。&lt;/p&gt;&lt;p&gt;前阵子 deepseek v4 真的出了哈，结果我都没第一时间跟进。因为手头上已经有正在用着 glm 的 pro + codex plus 组合，然后现在这阵的 glm 遇到服务不可用已经少了太多，所以没有太强烈的切换的驱动力。
-这么迟才来试一试 deepseek。为了信仰，充值了 10 块钱(笑死)。&lt;/p&gt;&lt;p&gt;题外话，glm 背刺老用户这个点，还是挺不爽的。我从 4.7 时代就开始用着了，老套餐的 pro 用量还是给得非常可以的，200 档而不是像现在 150 （折后 130 这种）。
-新套餐据说是严重缩水的，而老套餐已经不让再续费了。如果 deeepseek 性价比更高，套餐到期了就准备切换！&lt;/p&gt;&lt;p&gt;(证明我不是键盘侠)
-&lt;img src=&quot;/static/zai-token.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;还是用的我自己写的 agent，对接很顺利，改改配置就接上了，只遇到了一个报错是 &amp;quot;reasoning_content must be passed back to the API&amp;quot;。这是一个行为差异，zai 那边是没有强制要求这个的，也很简单修复掉了。&lt;/p&gt;&lt;p&gt;先验证对接完的功能可用性，我跑了之前的那个&lt;a href=&quot;/an-ai-debug-story.md&quot;&gt;画金门大桥的测试&lt;/a&gt;，deepseek flash 一次成功，效果上比 glm5 弱了一点，但是比 minimax 体感好，至少是一次就出来了。&lt;/p&gt;&lt;p&gt;测试 case 是使用的我的 agent repo 里面的 &lt;a href=&quot;https://github.com/tiancaiamao/ai/tree/31a4d82fbe54850ce101a8e3e25e5688c1d87544/benchmark&quot;&gt;benchmark&lt;/a&gt;。 case 基本上是 terminal benchmark 中挑选的，以及自己加的一些。
-关于 benchmark 这种，网上的官方结果都不太可信，只有自己验证出来的信息才更可靠。&lt;/p&gt;&lt;p&gt;基本上我每天会在睡觉前，跑一轮的我的 agent 的 benchmark，第二天早来起来，确认下是否有 regression，让 agent 分析一下 session 找找我的 agent 实现有没有可优化的空间之类的。
-这个事情挺浪费 token 的，大概一轮要 4-6 小时才跑完，如果遇到服务不可用导致各种中断，case 的失败率还会上升，所以结果也没有官方那种稳定，有时候第二天早上起来还没跑完的。
-反正 coding plan 里面的 token 不用也是浪费，这是一个很好的“浪费” token 的场景。&lt;/p&gt;&lt;p&gt;题外话，如果公司把 token 使用作为拥抱 AI 的指标，这种我是完全不认可的。token 很好烧的，但是关键得看烧出来产生了多少价值。现阶段的 agent，在 demo 阶段很好用，但是在烧 token 到产品转化这一块，离开人的参与是很难实际产出的。&lt;/p&gt;&lt;p&gt;模型用的是 deepseek v4 flash，没有用 pro 是因为我得先试试水看看价格消耗。
-跑完测试的 ai 结果对比分析我贴过来：&lt;/p&gt;&lt;pre&gt;&lt;code&gt;### 📊 总览
-
-| 指标 | Current (5/8) | New (5/12) | 变化 |
-|---|---|---|---|
-| **Pass Rate** | 64.86% (24/37) | 62.16% (23/37) | 🔴 **-2.7%** |
-| **Functional Pass Rate** | 81.08% (30/37) | 78.38% (29/37) | 🔴 **-2.7%** |
-| **Avg Agentic Score** | 92.17 | 88.26 | 🔴 **-3.91** |
-
-### ✅ 进步的任务 (+4)
-
-| 任务 | 旧状态 | 新状态 | Score 变化 |
-|---|---|---|---|
-| **#6** | ❌ fail | ✅ pass | 52 → **95** (+43) |
-| **#7** | ❌ fail | ✅ pass | 55 → **65** (+10) |
-| **#14** | ❌ fail | ✅ pass | 60 → **84** (+24) |
-| **#26** | ❌ fail | ✅ pass | 100 → 100 |
-
-### 🔴 退步的任务 (-5)
-
-| 任务 | 旧状态 | 新状态 | Score 变化 |
-|---|---|---|---|
-| **#9** | ✅ pass | ❌ fail | 100 → **5** (-95) ⚠️ |
-| **#11** | ✅ pass | ❌ fail | 100 → **60** (-40) |
-| **#13** | ✅ pass | ❌ fail | 100 → **60** (-40) |
-| **#19** | ✅ pass | ❌ fail | 100 → 100 (functional 掉了) |
-| **#24** | ✅ pass | ❌ fail | 100 → 100 (functional 掉了) |
-
-### ⚡ 分数变化（通过状态不变）
-
-| 任务 | Score 变化 | 说明 |
-|---|---|---|
-| **#10** | 63.3 → 46.7 | ⬇️ 下降 |
-| **#12** | 20 → 25 | ⬆️ 小幅上升 |
-| **#16** | 60 → 25 | ⬇️ 大幅下降 |
-
-### 📝 结论
-
-**总体略退步**。净变化 -1 个 pass（+4 -5），核心问题是：
-
-1. **#9 暴跌至 5 分**（100→5），这是最严重的回退，需要重点排查
-2. **#11、#13** 从满分掉到 60 分，也是显著退步
-3. **#19、#24** functional 失败但 agentic_score 仍为 100，可能是非功能性变更
-4. 好消息是 **#6 跃升到 95 分**、**#14 跃升到 84 分**，说明某些方面的改进是有效的
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;大概近 40 个测试 case 中，只比最近的 glm5.1 的结果多出一个失败。&lt;/p&gt;&lt;ul&gt;&lt;li&gt;pass rate 从 64.86% -&amp;gt; 62.16% 降低 2.7%&lt;/li&gt;&lt;li&gt;Avg Agentic Score 从 92.17 -&amp;gt; 88.26&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;表现非常惊艳！这比之前测试 minimax 的结果要好太多了，难怪 minimax 股价掉一半。而且这还是 deepseek flash，我有理由相信，如果是 deepseek pro 有可能得出更高的分数。&lt;/p&gt;&lt;p&gt;再看价格这块，这是跑了 4-6 小时的 benchmark 测试集，总共只花了 4.11 块钱，amazing！如果是日常的工作，对 LLM 调用频率不会这么满。所以我们可以把这个当作真正日常工具的 token 消耗的基准参考。
-一天4块钱，一个月120，比 pro 的 coding plan 还省了！如果把周未排除那价格还要低，妥妥的价格屠夫。&lt;/p&gt;&lt;p&gt;&lt;img src=&quot;/static/deepseek-token.png&quot; /&gt;&lt;/p&gt;&lt;p&gt;token 数总共是 15,939,170。看看分布，cache hit 大概在 83% 的样子，我没有专门针对我的 agent 优化过缓存命中率，不确定这大概是一个什么样的水平，还有多少价格空间。
-主要是 coding plan 那边没有啥太多优化 cache hit 的动力。如果切套餐了，这个还是可以搞一搞。&lt;/p&gt;</content></entry></feed>
+只不过这个在实践中，也是观察到，越做到后期，agent 越是每一个 phase 设计得越来越短，越来越不干活。就跟人类推进项目很像，前 20% 的时间推进了 80% 的进度，后面 80% 的时候推进那剩下的 20%，越推越推不动。&lt;/p&gt;&lt;p&gt;那个大型游戏项目的重写还是没写出来。但是至少算是更近一步吧，这些就是我在 long run harness 的一些探索。&lt;/p&gt;&lt;p&gt;回到开头的问题：个人能不能复现大公司的大型重写？答案是，目前还做不到完全自主的 long run，但 PGE 模式至少让 case 2 这个量级的项目变得可尝试了。每一步探索都在缩小差距，只是这个差距比想象中大。&lt;/p&gt;</content></entry></feed>
